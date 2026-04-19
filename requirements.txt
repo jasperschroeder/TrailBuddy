@@ -1,0 +1,13 @@
+streamlit
+pandas
+gpxpy
+plotly
+langchain
+langchain-community
+langchain-chroma
+langchain-ollama
+sentence-transformers
+chromadb
+sqlalchemy
+pydantic
+python-dotenv
