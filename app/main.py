@@ -1,5 +1,7 @@
 import streamlit as st
 
+from utils.db import initialize_db as init_db
+
 
 # Page configuration
 st.set_page_config(
@@ -7,6 +9,9 @@ st.set_page_config(
     page_icon="🥾",
     layout="wide"
 )
+# Initialize database
+init_db()
+
 
 # Sidebar
 st.sidebar.title("TrailBuddy")
