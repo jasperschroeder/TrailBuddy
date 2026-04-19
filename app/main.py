@@ -1,3 +1,5 @@
+from datetime import datetime
+from pathlib import Path
 import streamlit as st
 
 from utils.db import initialize_db as init_db
@@ -44,40 +46,93 @@ elif page == "Upload Hike":
     with col2:
         csv_file = st.file_uploader("Upload CSV (lap times / splites) file", type=["csv"])
 
+    title = st.text_input("Hike Title (optional)", value="My Hike")
+    hike_date = st.date_input("Hike Date", value=datetime.now().date())
+
     notes = st.text_area("Add any notes about this hike (optional)",
                          placeholder="E.g., Weather was great, trail was muddy, etc.")
 
-    if st.button("Save Hike"):
-        st.success("Hike would be saved here (we'll implement this next)!")
-        st.write("GPX uploaded:", gpx_file.name if gpx_file else "None")
-        st.write("CSV uploaded:", csv_file.name if csv_file else "None")
-        st.write("Notes:", notes[:2000] + "..." if notes else "None")
+    if st.button("Save Hike", type="primary"):
+        if not gpx_file:
+            st.error("Please upload a GPX file")
+        else:
+            # Parse files
+            from utils.parse_gpx import parse_gpx_file
+            from utils.parse_csv import parse_csv_file
+            from utils.db import save_hike
+
+            gpx_data = parse_gpx_file(gpx_file)
+            csv_data = parse_csv_file(csv_file) if csv_file else {}
+
+            # Prepare data for DB
+            save_data = {
+                "title": title,
+                "hike_date": str(hike_date),
+                "distance": gpx_data.get("distance", 0.0),
+                "elevation_gain": gpx_data.get("elevation_gain", 0.0),
+                "duration_minutes": gpx_data.get("duration_minutes") or csv_data.get("duration_from_csv"),
+                "gpx_filename": gpx_file.name,
+                "csv_filename": csv_file.name if csv_file else None,
+                "notes": notes
+            }
+
+            hike_id = save_hike(save_data)
+
+            # Save raw files (optional but can be nice)
+            if gpx_file:
+                gpx_path = Path("data/hikes") / f"hike_{hike_id}_{gpx_file.name}"
+                with open(gpx_path, "wb") as f:
+                    f.write(gpx_file.getbuffer())
+
+            st.success(f"Hike saved successfully with ID {hike_id}!")
+            st.balloons()
 
 elif page == "History":
-    st.title("Hiking History")
-    st.write("This is where your past hikes will be displayed in a nice timeline format.")
-    st.info("No hikes uploaded yet. Start by uploading a hike on the 'Upload Hike' page!")
+    st.title("Hike History")
+
+    from utils.db import get_all_hikes
+
+    hikes = get_all_hikes()
+
+    if not hikes:
+        st.info("No hikes logged yet. Go to 'Upload Hike' to get started!")
+    else:
+        # Convert to DataFrame for nice table
+        import pandas as pd
+        df = pd.DataFrame(hikes)
+        # Clean column names for display
+        display_df = df[["id", "title", "hike_date", "distance", "elevation_gain", "duration_minutes", "notes"]]
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        st.caption(f"Total hikes: {len(hikes)}")
 
 elif page == "Chat with TrailBuddy":
-    st.title("Chat with TrailBuddy, your AI hiking buddy!")
-    st.write("Ask TrailBuddy anything about your hikes, get recommendations, or just have a chat!")
+    st.title("💬 Chat with TrailBuddy")
+    st.caption("Ask about your hikes or get personalized recommendations based on your notes")
 
-    # Placeholder chat
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    from utils.rag import ask_trailbuddy
 
-    for message in st.session_state.messages:
+    # Chat history
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    # Display chat history
+    for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if prompt := st.chat_input("What was my longest hike? or How can I improve my packing?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # Chat input
+    if prompt := st.chat_input("What was my longest hike this year? How can I improve my packing?"):
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            st.markdown("I'm ready to answer once we connect the RAG pipeline (next steps)!")
-            st.caption("This will later use your personal hike data + notes.")
+            with st.spinner("Thinking about your hikes..."):
+                response = ask_trailbuddy(prompt)
+                st.markdown(response)
+
+        st.session_state.chat_messages.append({"role": "assistant", "content": response})
 
 # Footer
 st.sidebar.markdown("---")

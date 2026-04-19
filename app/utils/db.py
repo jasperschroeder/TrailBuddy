@@ -38,7 +38,43 @@ def initialize_db():
 
     conn.commit()
     conn.close()
-    print(f"Database initialized at {DB_PATH}")
+
+
+def save_hike(data: dict):
+    """Save a new hike to the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO hikes 
+        (title, hike_date, distance, elevation_gain, duration_minutes, 
+         gpx_filename, csv_filename, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data.get("title"),
+        data.get("hike_date"),
+        data.get("distance"),
+        data.get("elevation_gain"),
+        data.get("duration_minutes"),
+        data.get("gpx_filename"),
+        data.get("csv_filename"),
+        data.get("notes")
+    ))
+
+    conn.commit()
+    hike_id = cursor.lastrowid
+    conn.close()
+    return hike_id
+
+
+def get_all_hikes():
+    """Return all hikes as list of dicts."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM hikes ORDER BY hike_date DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 # Initialize on import
