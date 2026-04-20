@@ -46,8 +46,8 @@ def save_hike(data: dict):
     cursor = conn.cursor()
 
     cursor.execute('''
-        INSERT INTO hikes 
-        (title, hike_date, distance, elevation_gain, duration_minutes, 
+        INSERT INTO hikes
+        (title, hike_date, distance, elevation_gain, duration_minutes,
          gpx_filename, csv_filename, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
@@ -68,13 +68,19 @@ def save_hike(data: dict):
 
 
 def get_all_hikes():
-    """Return all hikes as list of dicts."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM hikes ORDER BY hike_date DESC")
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    """Return all hikes as list of dicts. With better error handling."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM hikes ORDER BY hike_date DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        hikes = [dict(row) for row in rows]
+        print(f"DEBUG: Retrieved {len(hikes)} hikes from database")  # temporary debug
+        return hikes
+    except Exception as e:
+        print(f"ERROR in get_all_hikes: {e}")
+        return []
 
 
 # Initialize on import

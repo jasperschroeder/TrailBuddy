@@ -22,20 +22,62 @@ st.sidebar.markdown("Your personal hiking companion + AI buddy.")
 # Navigation
 page = st.sidebar.selectbox(
     "Navigate",
-    ["Dashboard", "Upload Hike", "History", "Chat with TrailBuddy"],
+    ["Dashboard", "Upload Hike", "History", "Chat with TrailBuddy"],  # noqa
     help="Choose a section"
 )
 
 # Simple page routing
 if page == "Dashboard":
-    st.title("Dashboard")
-    st.write("Welcome to TrailBuddy!")
-    st.info("This is your dashboard where you can see an overview of your hiking activities and stats.")
+    st.title("📊 TrailBuddy Dashboard")
 
-    # Placeholder for future charts
-    st.subheader("Your Hiking Stats (coming soon)")
-    st.caption("Here you will see charts and insights about your hiking activities.")
+    from utils.db import get_all_hikes
+    import pandas as pd
 
+    hikes = get_all_hikes()
+
+    if not hikes:
+        st.info("No hikes logged yet. Start by uploading some hikes!")
+        st.stop()
+
+    df = pd.DataFrame(hikes)
+    df['hike_date'] = pd.to_datetime(df['hike_date'])
+
+    # Summary cards
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Hikes", len(df))
+    with col2:
+        total_distance = df['distance'].sum()
+        st.metric("Total Distance", f"{total_distance:.1f} km")
+    with col3:
+        total_elevation = df['elevation_gain'].sum()
+        st.metric("Total Elevation", f"{total_elevation:.0f} m")
+    with col4:
+        avg_distance = df['distance'].mean()
+        st.metric("Avg Distance", f"{avg_distance:.1f} km")
+
+    st.divider()
+
+    # Charts
+    colA, colB = st.columns(2)
+
+    with colA:
+        st.subheader("Hikes per Month")
+        df['month'] = df['hike_date'].dt.strftime('%Y-%m')
+        monthly = df.groupby('month').size().reset_index(name='count')
+        st.bar_chart(data=monthly, x='month', y='count', use_container_width=True)
+
+    with colB:
+        st.subheader("Distance Over Time")
+        df_sorted = df.sort_values('hike_date')
+        st.line_chart(data=df_sorted, x='hike_date', y='distance', use_container_width=True)
+
+    st.divider()
+
+    st.subheader("Recent Hikes")
+    recent_df = df.sort_values('hike_date', ascending=False).head(5)
+    display_df = recent_df[["title", "hike_date", "distance", "elevation_gain", "duration_minutes"]]
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 elif page == "Upload Hike":
     st.title("Upload a New Hike")
     st.write("Here you can upload your hiking data (GPX and CSV supported).")
@@ -44,7 +86,7 @@ elif page == "Upload Hike":
     with col1:
         gpx_file = st.file_uploader("Upload GPX route file", type=["gpx"])
     with col2:
-        csv_file = st.file_uploader("Upload CSV (lap times / splites) file", type=["csv"])
+        csv_file = st.file_uploader("Upload CSV (lap times / splits) file", type=["csv"])
 
     title = st.text_input("Hike Title (optional)", value="My Hike")
     hike_date = st.date_input("Hike Date", value=datetime.now().date())
@@ -107,32 +149,43 @@ elif page == "History":
         st.caption(f"Total hikes: {len(hikes)}")
 
 elif page == "Chat with TrailBuddy":
-    st.title("💬 Chat with TrailBuddy")
+    st.title("Chat with TrailBuddy")
     st.caption("Ask about your hikes or get personalized recommendations based on your notes")
 
     from utils.rag import ask_trailbuddy
 
-    # Chat history
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
-    # Display chat history
+    # Display previous messages if any
     for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            if message.get("sources"):
+                with st.expander("Sources", expanded=False):
+                    for source in message["sources"]:
+                        st.write(source)
 
-    # Chat input
-    if prompt := st.chat_input("What was my longest hike this year? How can I improve my packing?"):
+    if prompt := st.chat_input("Example: What was my longest hike? Based on my notes, what should I pack next time?"):
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking about your hikes..."):
-                response = ask_trailbuddy(prompt)
-                st.markdown(response)
+            with st.spinner("TrailBuddy is thinking..."):
+                answer, sources = ask_trailbuddy(prompt)
+                st.markdown(answer)
+                if sources:
+                    with st.expander("Sources", expanded=False):
+                        for source in sources:
+                            st.write(source)
 
-        st.session_state.chat_messages.append({"role": "assistant", "content": response})
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "content": answer,
+            "sources": sources
+        })
+
 
 # Footer
 st.sidebar.markdown("---")
