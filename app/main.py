@@ -98,61 +98,151 @@ elif page == "Upload Hike":
         if not gpx_file:
             st.error("Please upload a GPX file")
         else:
-            # Parse files
-            from utils.parse_gpx import parse_gpx_file
-            from utils.parse_csv import parse_csv_file
-            from utils.db import save_hike
+            # Duplicate checks
+            from utils.db import get_hike_by_filename, get_hike_by_title_and_date
 
-            gpx_data = parse_gpx_file(gpx_file)
-            csv_data = parse_csv_file(csv_file) if csv_file else {}
+            duplicate_errors = []
+            if get_hike_by_filename(gpx_file.name):
+                duplicate_errors.append(f"A hike with GPX file **{gpx_file.name}** was already uploaded.")
+            if get_hike_by_title_and_date(title, str(hike_date)):
+                duplicate_errors.append(f"A hike titled **{title}** on **{hike_date}** already exists.")
 
-            # Prepare data for DB
-            save_data = {
-                "title": title,
-                "hike_date": str(hike_date),
-                "distance": gpx_data.get("distance", 0.0),
-                "elevation_gain": gpx_data.get("elevation_gain", 0.0),
-                "duration_minutes": gpx_data.get("duration_minutes") or csv_data.get("duration_from_csv"),
-                "gpx_filename": gpx_file.name,
-                "csv_filename": csv_file.name if csv_file else None,
-                "notes": notes
-            }
+            if duplicate_errors:
+                for msg in duplicate_errors:
+                    st.error(msg)
+            else:
+                # Parse files
+                from utils.parse_gpx import parse_gpx_file
+                from utils.parse_csv import parse_csv_file
+                from utils.db import save_hike
 
-            hike_id = save_hike(save_data)
+                gpx_data = parse_gpx_file(gpx_file)
+                csv_data = parse_csv_file(csv_file) if csv_file else {}
 
-            # Save raw files (optional but can be nice)
-            if gpx_file:
-                gpx_path = Path("data/hikes") / f"hike_{hike_id}_{gpx_file.name}"
-                with open(gpx_path, "wb") as f:
-                    f.write(gpx_file.getbuffer())
+                # Prepare data for DB
+                save_data = {
+                    "title": title,
+                    "hike_date": str(hike_date),
+                    "distance": gpx_data.get("distance", 0.0),
+                    "elevation_gain": gpx_data.get("elevation_gain", 0.0),
+                    "duration_minutes": gpx_data.get("duration_minutes") or csv_data.get("duration_from_csv"),
+                    "gpx_filename": gpx_file.name,
+                    "csv_filename": csv_file.name if csv_file else None,
+                    "notes": notes
+                }
 
-            st.success(f"Hike saved successfully with ID {hike_id}!")
-            st.balloons()
+                hike_id = save_hike(save_data)
+
+                # Save raw files (optional but can be nice)
+                if gpx_file:
+                    gpx_path = Path("data/hikes") / f"hike_{hike_id}_{gpx_file.name}"
+                    with open(gpx_path, "wb") as f:
+                        f.write(gpx_file.getbuffer())
+
+                st.success(f"Hike saved successfully with ID {hike_id}!")
+                st.balloons()
 
 elif page == "History":
     st.title("Hike History")
 
-    from utils.db import get_all_hikes
+    from utils.db import get_all_hikes, delete_hike, update_hike
+    import glob
+
+    if "editing_hike_id" not in st.session_state:
+        st.session_state.editing_hike_id = None
+    if "confirm_delete_id" not in st.session_state:
+        st.session_state.confirm_delete_id = None
 
     hikes = get_all_hikes()
 
     if not hikes:
         st.info("No hikes logged yet. Go to 'Upload Hike' to get started!")
     else:
-        # Convert to DataFrame for nice table
-        import pandas as pd
-        df = pd.DataFrame(hikes)
-        # Clean column names for display
-        display_df = df[["id", "title", "hike_date", "distance", "elevation_gain", "duration_minutes", "notes"]]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
         st.caption(f"Total hikes: {len(hikes)}")
+        st.divider()
+
+        for hike in hikes:
+            hike_id = hike["id"]
+
+            col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1.5, 1.5, 1, 1])
+            with col1:
+                st.markdown(f"**{hike['title'] or 'Untitled'}**")
+            with col2:
+                st.text(hike["hike_date"])
+            with col3:
+                st.text(f"{hike['distance'] or 0:.1f} km")
+            with col4:
+                st.text(f"{hike['elevation_gain'] or 0:.0f} m gain")
+            with col5:
+                if st.button("✏️", key=f"edit_btn_{hike_id}", help="Edit hike"):
+                    st.session_state.editing_hike_id = hike_id
+                    st.session_state.confirm_delete_id = None
+                    st.rerun()
+            with col6:
+                if st.button("🗑️", key=f"del_btn_{hike_id}", help="Delete hike"):
+                    st.session_state.confirm_delete_id = hike_id
+                    st.session_state.editing_hike_id = None
+                    st.rerun()
+
+            # Edit form
+            if st.session_state.editing_hike_id == hike_id:
+                with st.form(key=f"edit_form_{hike_id}"):
+                    new_title = st.text_input("Title", value=hike["title"] or "")
+                    new_date = st.date_input(
+                        "Date",
+                        value=datetime.strptime(hike["hike_date"], "%Y-%m-%d").date()
+                    )
+                    new_notes = st.text_area("Notes", value=hike["notes"] or "")
+                    save_col, cancel_col = st.columns([1, 1])
+                    with save_col:
+                        saved = st.form_submit_button("Save", type="primary")
+                    with cancel_col:
+                        cancelled = st.form_submit_button("Cancel")
+
+                if saved:
+                    update_hike(hike_id, {
+                        "title": new_title,
+                        "hike_date": str(new_date),
+                        "notes": new_notes
+                    })
+                    st.session_state.editing_hike_id = None
+                    st.rerun()
+                elif cancelled:
+                    st.session_state.editing_hike_id = None
+                    st.rerun()
+
+            # Delete confirmation
+            if st.session_state.confirm_delete_id == hike_id:
+                st.warning(f"Are you sure you want to delete **{hike['title'] or 'this hike'}**? This cannot be undone.")  # noqa
+                confirm_col, cancel_col2 = st.columns([1, 1])
+                with confirm_col:
+                    if st.button("Confirm Delete", key=f"confirm_del_{hike_id}", type="primary"):
+                        delete_hike(hike_id)
+                        # Remove GPX file from disk if it exists
+                        for gpx_file_path in glob.glob(f"data/hikes/hike_{hike_id}_*"):
+                            Path(gpx_file_path).unlink(missing_ok=True)
+                        st.session_state.confirm_delete_id = None
+                        st.rerun()
+                with cancel_col2:
+                    if st.button("Cancel", key=f"cancel_del_{hike_id}"):
+                        st.session_state.confirm_delete_id = None
+                        st.rerun()
+
+            st.divider()
 
 elif page == "Chat with TrailBuddy":
     st.title("Chat with TrailBuddy")
     st.caption("Ask about your hikes or get personalized recommendations based on your notes")
 
-    from utils.rag import ask_trailbuddy
+    from utils.rag import ask_trailbuddy, rebuild_vectorstore
+
+    if st.button("🔄 Rebuild Vector DB", help="Re-index all hikes into the vector database"):
+        with st.spinner("Rebuilding vector database..."):
+            try:
+                rebuild_vectorstore()
+                st.success("Vector DB rebuilt successfully!")
+            except Exception as e:
+                st.error(f"Failed to rebuild vector DB: {e}")
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []

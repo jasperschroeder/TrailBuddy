@@ -83,5 +83,49 @@ def get_all_hikes():
         return []
 
 
+def delete_hike(hike_id: int):
+    """Delete a hike by ID."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM hikes WHERE id = ?", (hike_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_hike(hike_id: int, data: dict):
+    """Update editable fields (title, hike_date, notes) for a hike."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE hikes SET title = ?, hike_date = ?, notes = ? WHERE id = ?",
+        (data.get("title"), data.get("hike_date"), data.get("notes"), hike_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_hike_by_filename(filename: str):
+    """Return a hike matching the given GPX filename, or None."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM hikes WHERE gpx_filename = ? LIMIT 1", (filename,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_hike_by_title_and_date(title: str, hike_date: str):
+    """Return a hike matching the given title and date, or None."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM hikes WHERE title = ? AND hike_date = ? LIMIT 1",
+        (title, hike_date)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 # Initialize on import
 initialize_db()
