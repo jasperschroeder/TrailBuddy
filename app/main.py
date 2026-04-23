@@ -1,9 +1,12 @@
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
-
+import pandas as pd
+import folium
+from streamlit_folium import st_folium
 from utils.db import initialize_db as init_db
-
+from utils.parse_gpx import parse_gpx_file
+from utils.parse_csv import parse_csv_file
 
 # Page configuration
 st.set_page_config(
@@ -31,7 +34,7 @@ if page == "Dashboard":
     st.title("📊 TrailBuddy Dashboard")
 
     from utils.db import get_all_hikes
-    import pandas as pd
+    import glob
 
     hikes = get_all_hikes()
 
@@ -55,8 +58,6 @@ if page == "Dashboard":
     with col4:
         avg_distance = df['distance'].mean()
         st.metric("Avg Distance", f"{avg_distance:.1f} km")
-
-    st.divider()
 
     # Charts
     colA, colB = st.columns(2)
@@ -111,11 +112,9 @@ elif page == "Upload Hike":
                 for msg in duplicate_errors:
                     st.error(msg)
             else:
-                # Parse files
-                from utils.parse_gpx import parse_gpx_file
-                from utils.parse_csv import parse_csv_file
-                from utils.db import save_hike
 
+                # Parse files
+                from utils.db import save_hike
                 gpx_data = parse_gpx_file(gpx_file)
                 csv_data = parse_csv_file(csv_file) if csv_file else {}
 
@@ -163,8 +162,7 @@ elif page == "History":
 
         for hike in hikes:
             hike_id = hike["id"]
-
-            col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1.5, 1.5, 1, 1])
+            col1, col2, col3, col4, col5, col6, col7 = st.columns([3, 2, 1.5, 1.5, 1.25, 1.25, 1.25])
             with col1:
                 st.markdown(f"**{hike['title'] or 'Untitled'}**")
             with col2:
@@ -177,12 +175,43 @@ elif page == "History":
                 if st.button("✏️", key=f"edit_btn_{hike_id}", help="Edit hike"):
                     st.session_state.editing_hike_id = hike_id
                     st.session_state.confirm_delete_id = None
+                    st.session_state.viewing_hike_id = None
                     st.rerun()
             with col6:
                 if st.button("🗑️", key=f"del_btn_{hike_id}", help="Delete hike"):
                     st.session_state.confirm_delete_id = hike_id
                     st.session_state.editing_hike_id = None
+                    st.session_state.viewing_hike_id = None
                     st.rerun()
+            with col7:
+                if st.button("👁️", key=f"view_btn_{hike_id}", help="View hike details and map"):
+                    st.session_state.viewing_hike_id = hike_id
+                    st.session_state.editing_hike_id = None
+                    st.session_state.confirm_delete_id = None
+                    st.rerun()
+
+            # View details and map
+            if st.session_state.get("viewing_hike_id") == hike_id:
+                st.markdown(f"### {hike['title'] or 'Untitled'} ({hike['hike_date']})")
+                st.write(f"**Distance:** {hike['distance'] or 0:.2f} km")
+                st.write(f"**Elevation Gain:** {hike['elevation_gain'] or 0:.0f} m")
+                st.write(f"**Duration:** {hike.get('duration_minutes', 'N/A')} min")
+                st.write(f"**Notes:** {hike.get('notes', '')}")
+                # Try to find the GPX file for this hike
+                gpx_pattern = f"data/hikes/hike_{hike_id}_*.gpx"
+                gpx_files = glob.glob(gpx_pattern)
+                if gpx_files:
+                    gpx_data = parse_gpx_file(gpx_files[0])
+                    points = gpx_data.get("points", [])
+                    if points:
+                        map_center = points[0]
+                        m = folium.Map(location=map_center, zoom_start=13)
+                        folium.PolyLine(points, color="blue", weight=2.5, opacity=1).add_to(m)
+                        st_folium(m, width=700, height=500)
+                    else:
+                        st.warning("No points found in the GPX file to display on the map.")
+                else:
+                    st.info("No GPX file found for this hike.")
 
             # Edit form
             if st.session_state.editing_hike_id == hike_id:

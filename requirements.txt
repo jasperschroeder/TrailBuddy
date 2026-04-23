@@ -1,5 +1,7 @@
 chromadb==1.5.8
 gpxpy==1.6.2
+folium==0.17.0
+streamlit-folium==0.21.0
 langchain==1.2.15
 langchain-chroma==1.1.0
 langchain-community==0.4.1
