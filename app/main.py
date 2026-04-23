@@ -231,18 +231,20 @@ elif page == "History":
             st.divider()
 
 elif page == "Chat with TrailBuddy":
-    st.title("Chat with TrailBuddy")
-    st.caption("Ask about your hikes or get personalized recommendations based on your notes")
-
     from utils.rag import ask_trailbuddy, rebuild_vectorstore
 
-    if st.button("🔄 Rebuild Vector DB", help="Re-index all hikes into the vector database"):
-        with st.spinner("Rebuilding vector database..."):
-            try:
-                rebuild_vectorstore()
-                st.success("Vector DB rebuilt successfully!")
-            except Exception as e:
-                st.error(f"Failed to rebuild vector DB: {e}")
+    title_col, action_col = st.columns([6, 2], vertical_alignment="top")
+    with title_col:
+        st.markdown("## Chat with TrailBuddy")
+        st.caption("Ask about your hikes or get personalized recommendations based on your notes")
+    with action_col:
+        if st.button("🔄 Rebuild Vector DB", help="Re-index all hikes into the vector database"):
+            with st.spinner("Rebuilding vector database..."):
+                try:
+                    rebuild_vectorstore()
+                    st.success("Vector DB rebuilt successfully!")
+                except Exception as e:
+                    st.error(f"Failed to rebuild vector DB: {e}")
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
