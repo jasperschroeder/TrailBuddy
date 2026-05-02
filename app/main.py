@@ -61,24 +61,23 @@ if page == "Dashboard":
 
     # Charts
     colA, colB = st.columns(2)
-
     with colA:
         st.subheader("Hikes per Month")
         df['month'] = df['hike_date'].dt.strftime('%Y-%m')
         monthly = df.groupby('month').size().reset_index(name='count')
-        st.bar_chart(data=monthly, x='month', y='count', use_container_width=True)
+        st.bar_chart(data=monthly, x='month', y='count', width="stretch")
 
     with colB:
         st.subheader("Distance Over Time")
         df_sorted = df.sort_values('hike_date')
-        st.line_chart(data=df_sorted, x='hike_date', y='distance', use_container_width=True)
+        st.line_chart(data=df_sorted, x='hike_date', y='distance', width="stretch")
 
     st.divider()
 
     st.subheader("Recent Hikes")
     recent_df = df.sort_values('hike_date', ascending=False).head(5)
     display_df = recent_df[["title", "hike_date", "distance", "elevation_gain", "duration_minutes"]]
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 elif page == "Upload Hike":
     st.title("Upload a New Hike")
     st.write("Here you can upload your hiking data (GPX and CSV supported).")
@@ -185,7 +184,10 @@ elif page == "History":
                     st.rerun()
             with col7:
                 if st.button("👁️", key=f"view_btn_{hike_id}", help="View hike details and map"):
-                    st.session_state.viewing_hike_id = hike_id
+                    if st.session_state.get("viewing_hike_id") == hike_id:
+                        st.session_state.viewing_hike_id = None
+                    else:
+                        st.session_state.viewing_hike_id = hike_id
                     st.session_state.editing_hike_id = None
                     st.session_state.confirm_delete_id = None
                     st.rerun()
@@ -274,6 +276,9 @@ elif page == "Chat with TrailBuddy":
                     st.success("Vector DB rebuilt successfully!")
                 except Exception as e:
                     st.error(f"Failed to rebuild vector DB: {e}")
+        if st.button("🧹 Clear Chat", help="Clear current chat history"):
+            st.session_state.chat_messages = []
+            st.rerun()
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -283,9 +288,9 @@ elif page == "Chat with TrailBuddy":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message.get("sources"):
-                with st.expander("Sources", expanded=False):
+                with st.expander("Tools used", expanded=False):
                     for source in message["sources"]:
-                        st.write(source)
+                        st.markdown(source)
 
     if prompt := st.chat_input("Example: What was my longest hike? Based on my notes, what should I pack next time?"):
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
@@ -297,9 +302,9 @@ elif page == "Chat with TrailBuddy":
                 answer, sources = ask_trailbuddy(prompt)
                 st.markdown(answer)
                 if sources:
-                    with st.expander("Sources", expanded=False):
+                    with st.expander("Tools used", expanded=False):
                         for source in sources:
-                            st.write(source)
+                            st.markdown(source)
 
         st.session_state.chat_messages.append({
             "role": "assistant",
