@@ -1,5 +1,4 @@
 import gpxpy
-import gpxpy.gpx
 from datetime import datetime
 
 
@@ -49,12 +48,20 @@ def parse_gpx_file(gpx_file) -> dict:
         if start_time and end_time:
             duration_minutes = int((end_time - start_time).total_seconds() / 60)
 
+        points = [
+            (point.latitude, point.longitude)
+            for track in gpx.tracks
+            for segment in track.segments
+            for point in segment.points
+        ]
+
         return {
             "distance": round(distance, 2),  # in km
             "elevation_gain": round(elevation_gain, 1),  # in meters
             "duration_minutes": duration_minutes,
             "title": gpx.name or "Unnamed Hike",
-            "date": start_time.strftime("%Y-%m-%d") if start_time else datetime.now().strftime("%Y-%m-%d")
+            "date": start_time.strftime("%Y-%m-%d") if start_time else datetime.now().strftime("%Y-%m-%d"),
+            "points": points
         }
 
     except Exception as e:
@@ -64,5 +71,6 @@ def parse_gpx_file(gpx_file) -> dict:
             "elevation_gain": 0.0,
             "duration_minutes": None,
             "title": "Unnamed Hike",
-            "date": datetime.now().strftime("%Y-%m-%d")
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "points": []
         }

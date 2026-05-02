@@ -1,164 +1,196 @@
-import shutil
+import re
+import json
+import sqlite3
 
-from langchain_ollama import OllamaLLM
+from langchain_ollama import ChatOllama
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from utils.db import get_all_hikes
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from utils.db import get_all_hikes, DB_PATH
 from pathlib import Path
 
 
 # Configuration
 DATA_DIR = Path("data")
 CHROMA_PATH = DATA_DIR / "chroma_db"
+CHROMA_COLLECTION = "trailbuddy_hikes"
 
 # Initialize embeddings and LLM (local)
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-base-en-v1.5")  # Optionally replace with all-MiniLM-L6-v2
 
-llm = OllamaLLM(
-    # model="llama3.2:8b",
+llm = ChatOllama(
     model="qwen2.5:7b",
-    temperature=0.3,
-    num_ctx=8192
+    temperature=0.7,
+    num_ctx=4096,
 )
 
 
-def get_or_create_vectorstore():
-    hikes = get_all_hikes()
+# Vectorstore helpers (RAG over notes / free-text)
 
-    if not hikes:
-        vectorstore = Chroma.from_texts(
-            texts=["No hikes logged yet."],
-            embedding=embeddings,
-            persist_directory=str(CHROMA_PATH)
-        )
-        return vectorstore
-
-    documents = []
+def _build_documents(hikes: list[dict]) -> list[str]:
+    docs = []
     for hike in hikes:
-        text = f"""Hike ID: {hike.get('id')}
-        Title: {hike.get('title', 'Untitled')}
-        Date: {hike.get('hike_date')}
-        Distance: {hike.get('distance', 0)} km
-        Elevation Gain: {hike.get('elevation_gain', 0)} m
-        Duration: {hike.get('duration_minutes', 'unknown')} minutes
-        Notes: {hike.get('notes', 'No notes provided')}
-        """
-        documents.append(text)
+        text = (
+            f"Hike ID: {hike.get('id')}\n"
+            f"Title: {hike.get('title', 'Untitled')}\n"
+            f"Date: {hike.get('hike_date')}\n"
+            f"Distance: {hike.get('distance', 0)} km\n"
+            f"Elevation Gain: {hike.get('elevation_gain', 0)} m\n"
+            f"Duration: {hike.get('duration_minutes', 'unknown')} minutes\n"
+            f"Notes: {hike.get('notes', 'No notes provided')}"
+        )
+        docs.append(text)
+    return docs
 
-    # Recreate fresh every time (safe for small number of hikes)
-    vectorstore = Chroma.from_texts(
+
+def _open_vectorstore() -> Chroma:
+    """Open the persisted hikes collection without rewriting it."""
+    return Chroma(
+        collection_name=CHROMA_COLLECTION,
+        embedding_function=embeddings,
+        persist_directory=str(CHROMA_PATH),
+    )
+
+
+def _build_or_rebuild_collection() -> Chroma:
+    """Recreate the hikes collection content in-place (Windows lock-safe)."""
+    hikes = get_all_hikes()
+    documents = _build_documents(hikes) if hikes else ["No hikes logged yet."]
+
+    # Delete collection entries instead of deleting DB files on disk.
+    try:
+        _open_vectorstore().delete_collection()
+    except Exception:
+        pass
+
+    return Chroma.from_texts(
         texts=documents,
         embedding=embeddings,
-        persist_directory=str(CHROMA_PATH)
-    )
-    return vectorstore
-
-
-_ROUTE_PROMPT = ChatPromptTemplate.from_template(
-    """
-You are a routing assistant. Decide whether the following message requires looking up the user's personal hike
-history/data to answer it properly. Reply with exactly one word: YES or NO.
-
-Message: {question}"""
-)
-
-
-def _needs_rag(question: str) -> bool:
-    """Ask the LLM whether the question requires hike data retrieval."""
-    chain = _ROUTE_PROMPT | llm | StrOutputParser()
-    result = chain.invoke({"question": question}).strip().upper()
-    return result.startswith("YES")
-
-
-def ask_trailbuddy(question: str):
-    """Ask a question and return answer + sources only when RAG is actually needed."""
-    import re
-
-    if not _needs_rag(question):
-        no_rag_prompt = ChatPromptTemplate.from_template(
-            """You are TrailBuddy, a friendly hiking companion chatbot.
-Answer the following message naturally. Do NOT reference any hike data or statistics.
-
-Message: {question}
-
-Response:"""
-        )
-        chain = no_rag_prompt | llm | StrOutputParser()
-        return chain.invoke({"question": question}), []
-
-    vectorstore = get_or_create_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
-
-    docs = retriever.invoke(question)
-
-    # Build clean context (one block per unique hike)
-    context_parts = []
-    seen_hike_ids = set()
-
-    for doc in docs:
-        content = doc.page_content.strip()
-        if "Hike ID:" in content:  # noqa
-            try:
-                hike_id_line = [line for line in content.split("\n") if "Hike ID:" in line][0]
-                hike_id = hike_id_line.split(":")[1].strip()
-                if hike_id in seen_hike_ids:
-                    continue
-                seen_hike_ids.add(hike_id)
-            except Exception:  # noqa
-                pass
-
-        context_parts.append(content)
-
-    context = "\n\n".join(context_parts)
-
-    template = """You are TrailBuddy, a helpful and encouraging hiking companion.
-
-Use ONLY the information in the Context below to answer the question.
-Be specific and mention real numbers, dates, and notes when relevant.
-If the context doesn't contain the answer, say "I don't have that information in your hike history yet."
-
-Context:
-{context}
-
-Question: {question}
-
-Answer in a natural, friendly tone:"""
-
-    prompt = ChatPromptTemplate.from_template(template)
-    chain = prompt | llm | StrOutputParser()
-
-    answer = chain.invoke({"context": context, "question": question})
-
-    # Only show sources if the answer contains specific hike data
-    has_specific_data = bool(
-        re.search(r'\d+\.?\d*\s*km', answer) or
-        re.search(r'\d+\s*m\s*(?:elevation|gain)', answer) or
-        re.search(r'\d{4}-\d{2}-\d{2}', answer) or
-        re.search(r'\d+\s*minutes?\b', answer)
+        collection_name=CHROMA_COLLECTION,
+        persist_directory=str(CHROMA_PATH),
     )
 
-    sources = []
-    if has_specific_data and seen_hike_ids:
-        seen = set()
-        for doc in docs:
-            content = doc.page_content.strip()
-            if "Hike ID:" in content:
-                try:
-                    lines = [line.strip() for line in content.split("\n") if line.strip()]
-                    snippet = "\n".join(lines[:4])
-                    if snippet not in seen:
-                        seen.add(snippet)
-                        sources.append(snippet)
-                except Exception:  # noqa
-                    pass
 
-    return answer, sources
+def get_or_create_vectorstore() -> Chroma:
+    """Open existing collection, creating it on first use if needed."""
+    try:
+        vectorstore = _open_vectorstore()
+        _ = vectorstore._collection.count()
+        return vectorstore
+    except Exception:
+        return _build_or_rebuild_collection()
 
 
 def rebuild_vectorstore():
-    """Delete the persisted ChromaDB and rebuild it from the current hike data."""
-    if CHROMA_PATH.exists():
-        shutil.rmtree(CHROMA_PATH)
-    return get_or_create_vectorstore()
+    """Rebuild the hikes vector collection without deleting locked files."""
+    return _build_or_rebuild_collection()
+
+
+# Tool 1 - SQL for structured and aggregate queries
+
+# Only allowing read-only SELECT queries for safety.
+_ALLOWED_SQL = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+
+_SQL_SCHEMA = (
+    "Table: hikes\n"
+    "Columns: id INTEGER, hike_date TEXT (YYYY-MM-DD), title TEXT, "
+    "distance REAL (km), elevation_gain REAL (meters), "
+    "duration_minutes INTEGER, notes TEXT, created_at TEXT"
+)
+
+
+@tool
+def query_hikes_db(sql: str) -> str:
+    """Run a read-only SQL SELECT query against the hikes database.
+
+    Schema - hikes(id, hike_date TEXT YYYY-MM-DD, title TEXT,
+    distance REAL km, elevation_gain REAL meters,
+    duration_minutes INTEGER, notes TEXT, created_at TEXT).
+
+    Use this tool for exact numbers, counts, sums, averages, rankings,
+    or filtering by date / distance / elevation.
+    """
+    if not _ALLOWED_SQL.match(sql.strip()):
+        return "Error: only SELECT queries are permitted."
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(sql.strip())
+            rows = cursor.fetchall()
+        if not rows:
+            return "No results found."
+        return json.dumps([dict(row) for row in rows], default=str)
+    except sqlite3.Error as exc:
+        return f"SQL error: {exc}"
+
+
+# Tool 2 - RAG for semantic search over notes and descriptions
+
+@tool
+def search_hike_notes(query: str) -> str:
+    """Search hike notes and descriptions using semantic similarity.
+
+    Use this tool when the question is about the *feel*, *experience*, or
+    free-text content of hikes — e.g. 'any hike where I mentioned rain?'
+    or 'hikes where I felt tired'.
+    """
+    vectorstore = get_or_create_vectorstore()
+    docs = vectorstore.as_retriever(search_kwargs={"k": 5}).invoke(query)
+    return "\n\n---\n\n".join(doc.page_content for doc in docs)
+
+
+# Hybrid agent - Putting both together with a system prompt that explains when to use which tool.
+
+_TOOLS = [query_hikes_db, search_hike_notes]
+_TOOL_MAP = {t.name: t for t in _TOOLS}
+_LLM_WITH_TOOLS = llm.bind_tools(_TOOLS)
+
+_SYSTEM_CONTENT = (
+    "You are TrailBuddy, a friendly and encouraging hiking companion.\n\n"
+    "You have two tools:\n"
+    "- query_hikes_db: use for numbers, counts, sums, rankings, date filters.\n"
+    f"  {_SQL_SCHEMA}\n"
+    "- search_hike_notes: use for semantic/free-text search over hike notes.\n\n"
+    "Use one or both tools as needed, then give a clear, friendly answer with "
+    "specific numbers and dates when available. "
+    "If you cannot find the information, say so honestly."
+)
+_SYSTEM_PROMPT = SystemMessage(content=_SYSTEM_CONTENT)
+
+
+def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
+    """Run the hybrid tool-calling + RAG agent and return (answer, sources)."""
+    messages = [_SYSTEM_PROMPT, HumanMessage(content=question)]
+    sources: list[str] = []
+
+    for _ in range(10):  # safety cap on iterations
+        response = _LLM_WITH_TOOLS.invoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
+            break
+
+        for tc in response.tool_calls:
+            tool_fn = _TOOL_MAP[tc["name"]]
+            result = tool_fn.invoke(tc["args"])
+            tool_call_id = tc.get("id")
+            if tool_call_id is not None:
+                messages.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+            else:
+                messages.append(ToolMessage(content=str(result)))
+
+            # Record a deterministic execution trace for the UI.
+            args_obj = tc.get("args", {})
+            if not isinstance(args_obj, dict):
+                args_obj = {"value": args_obj}
+            args_json = json.dumps(args_obj, ensure_ascii=True, indent=2)
+            trace = (
+                f"Tool: {tc['name']}\n"
+                f"Call ID: {tc.get('id', 'n/a')}\n"
+                f"Args:\n```json\n{args_json}\n```"
+            )
+            sources.append(trace)
+
+    return response.content, sources

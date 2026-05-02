@@ -1,9 +1,12 @@
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
-
+import pandas as pd
+import folium
+from streamlit_folium import st_folium
 from utils.db import initialize_db as init_db
-
+from utils.parse_gpx import parse_gpx_file
+from utils.parse_csv import parse_csv_file
 
 # Page configuration
 st.set_page_config(
@@ -31,7 +34,7 @@ if page == "Dashboard":
     st.title("📊 TrailBuddy Dashboard")
 
     from utils.db import get_all_hikes
-    import pandas as pd
+    import glob
 
     hikes = get_all_hikes()
 
@@ -56,28 +59,25 @@ if page == "Dashboard":
         avg_distance = df['distance'].mean()
         st.metric("Avg Distance", f"{avg_distance:.1f} km")
 
-    st.divider()
-
     # Charts
     colA, colB = st.columns(2)
-
     with colA:
         st.subheader("Hikes per Month")
         df['month'] = df['hike_date'].dt.strftime('%Y-%m')
         monthly = df.groupby('month').size().reset_index(name='count')
-        st.bar_chart(data=monthly, x='month', y='count', use_container_width=True)
+        st.bar_chart(data=monthly, x='month', y='count', width="stretch")
 
     with colB:
         st.subheader("Distance Over Time")
         df_sorted = df.sort_values('hike_date')
-        st.line_chart(data=df_sorted, x='hike_date', y='distance', use_container_width=True)
+        st.line_chart(data=df_sorted, x='hike_date', y='distance', width="stretch")
 
     st.divider()
 
     st.subheader("Recent Hikes")
     recent_df = df.sort_values('hike_date', ascending=False).head(5)
     display_df = recent_df[["title", "hike_date", "distance", "elevation_gain", "duration_minutes"]]
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 elif page == "Upload Hike":
     st.title("Upload a New Hike")
     st.write("Here you can upload your hiking data (GPX and CSV supported).")
@@ -111,11 +111,9 @@ elif page == "Upload Hike":
                 for msg in duplicate_errors:
                     st.error(msg)
             else:
-                # Parse files
-                from utils.parse_gpx import parse_gpx_file
-                from utils.parse_csv import parse_csv_file
-                from utils.db import save_hike
 
+                # Parse files
+                from utils.db import save_hike
                 gpx_data = parse_gpx_file(gpx_file)
                 csv_data = parse_csv_file(csv_file) if csv_file else {}
 
@@ -163,8 +161,7 @@ elif page == "History":
 
         for hike in hikes:
             hike_id = hike["id"]
-
-            col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1.5, 1.5, 1, 1])
+            col1, col2, col3, col4, col5, col6, col7 = st.columns([3, 2, 1.5, 1.5, 1.25, 1.25, 1.25])
             with col1:
                 st.markdown(f"**{hike['title'] or 'Untitled'}**")
             with col2:
@@ -177,12 +174,46 @@ elif page == "History":
                 if st.button("✏️", key=f"edit_btn_{hike_id}", help="Edit hike"):
                     st.session_state.editing_hike_id = hike_id
                     st.session_state.confirm_delete_id = None
+                    st.session_state.viewing_hike_id = None
                     st.rerun()
             with col6:
                 if st.button("🗑️", key=f"del_btn_{hike_id}", help="Delete hike"):
                     st.session_state.confirm_delete_id = hike_id
                     st.session_state.editing_hike_id = None
+                    st.session_state.viewing_hike_id = None
                     st.rerun()
+            with col7:
+                if st.button("👁️", key=f"view_btn_{hike_id}", help="View hike details and map"):
+                    if st.session_state.get("viewing_hike_id") == hike_id:
+                        st.session_state.viewing_hike_id = None
+                    else:
+                        st.session_state.viewing_hike_id = hike_id
+                    st.session_state.editing_hike_id = None
+                    st.session_state.confirm_delete_id = None
+                    st.rerun()
+
+            # View details and map
+            if st.session_state.get("viewing_hike_id") == hike_id:
+                st.markdown(f"### {hike['title'] or 'Untitled'} ({hike['hike_date']})")
+                st.write(f"**Distance:** {hike['distance'] or 0:.2f} km")
+                st.write(f"**Elevation Gain:** {hike['elevation_gain'] or 0:.0f} m")
+                st.write(f"**Duration:** {hike.get('duration_minutes', 'N/A')} min")
+                st.write(f"**Notes:** {hike.get('notes', '')}")
+                # Try to find the GPX file for this hike
+                gpx_pattern = f"data/hikes/hike_{hike_id}_*.gpx"
+                gpx_files = glob.glob(gpx_pattern)
+                if gpx_files:
+                    gpx_data = parse_gpx_file(gpx_files[0])
+                    points = gpx_data.get("points", [])
+                    if points:
+                        map_center = points[0]
+                        m = folium.Map(location=map_center, zoom_start=13)
+                        folium.PolyLine(points, color="blue", weight=2.5, opacity=1).add_to(m)
+                        st_folium(m, width=700, height=500)
+                    else:
+                        st.warning("No points found in the GPX file to display on the map.")
+                else:
+                    st.info("No GPX file found for this hike.")
 
             # Edit form
             if st.session_state.editing_hike_id == hike_id:
@@ -245,6 +276,9 @@ elif page == "Chat with TrailBuddy":
                     st.success("Vector DB rebuilt successfully!")
                 except Exception as e:
                     st.error(f"Failed to rebuild vector DB: {e}")
+        if st.button("🧹 Clear Chat", help="Clear current chat history"):
+            st.session_state.chat_messages = []
+            st.rerun()
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -254,9 +288,9 @@ elif page == "Chat with TrailBuddy":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message.get("sources"):
-                with st.expander("Sources", expanded=False):
+                with st.expander("Tools used", expanded=False):
                     for source in message["sources"]:
-                        st.write(source)
+                        st.markdown(source)
 
     if prompt := st.chat_input("Example: What was my longest hike? Based on my notes, what should I pack next time?"):
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
@@ -268,9 +302,9 @@ elif page == "Chat with TrailBuddy":
                 answer, sources = ask_trailbuddy(prompt)
                 st.markdown(answer)
                 if sources:
-                    with st.expander("Sources", expanded=False):
+                    with st.expander("Tools used", expanded=False):
                         for source in sources:
-                            st.write(source)
+                            st.markdown(source)
 
         st.session_state.chat_messages.append({
             "role": "assistant",
