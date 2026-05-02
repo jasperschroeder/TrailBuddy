@@ -114,12 +114,11 @@ def query_hikes_db(sql: str) -> str:
     if not _ALLOWED_SQL.match(sql.strip()):
         return "Error: only SELECT queries are permitted."
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(sql.strip())
-        rows = cursor.fetchall()
-        conn.close()
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(sql.strip())
+            rows = cursor.fetchall()
         if not rows:
             return "No results found."
         return json.dumps([dict(row) for row in rows], default=str)
