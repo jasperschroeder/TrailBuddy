@@ -176,7 +176,11 @@ def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
         for tc in response.tool_calls:
             tool_fn = _TOOL_MAP[tc["name"]]
             result = tool_fn.invoke(tc["args"])
-            messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+            tool_call_id = tc.get("id")
+            if tool_call_id is not None:
+                messages.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+            else:
+                messages.append(ToolMessage(content=str(result)))
 
             # Record a deterministic execution trace for the UI.
             args_obj = tc.get("args", {})
