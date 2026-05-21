@@ -76,7 +76,6 @@ def get_all_hikes():
         rows = cursor.fetchall()
         conn.close()
         hikes = [dict(row) for row in rows]
-        print(f"DEBUG: Retrieved {len(hikes)} hikes from database")  # temporary debug
         return hikes
     except Exception as e:
         print(f"ERROR in get_all_hikes: {e}")

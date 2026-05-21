@@ -1,9 +1,17 @@
 # Project specific stuff
+# Keep all personal/local hike data and generated indexes out of version control.
 data/
-__pycache__/
+app/data/
+**/chroma_db/
 *.db
-venv/
+*.sqlite
+*.sqlite3
+*.gpx
 .env
+.env.*
+venv/
+.venv/
+__pycache__/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
