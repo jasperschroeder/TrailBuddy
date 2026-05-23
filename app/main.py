@@ -82,17 +82,33 @@ elif page == "Upload Hike":
     st.title("Upload a New Hike")
     st.write("Here you can upload your hiking data (GPX and CSV supported).")
 
+    # Defaults used to reset the upload form after a successful save.
+    upload_defaults = {
+        "upload_gpx": None,
+        "upload_csv": None,
+        "upload_title": "My Hike",
+        "upload_date": datetime.now().date(),
+        "upload_notes": ""
+    }
+
+    # Streamlit widgets can only be updated before they're instantiated.
+    # Apply the reset at the top of the next rerun.
+    if st.session_state.pop("reset_upload_form", False):
+        for key, value in upload_defaults.items():
+            st.session_state[key] = value
+
     col1, col2 = st.columns(2)
     with col1:
-        gpx_file = st.file_uploader("Upload GPX route file", type=["gpx"])
+        gpx_file = st.file_uploader("Upload GPX route file", type=["gpx"], key="upload_gpx")
     with col2:
-        csv_file = st.file_uploader("Upload CSV (lap times / splits) file", type=["csv"])
+        csv_file = st.file_uploader("Upload CSV (lap times / splits) file", type=["csv"], key="upload_csv")
 
-    title = st.text_input("Hike Title (optional)", value="My Hike")
-    hike_date = st.date_input("Hike Date", value=datetime.now().date())
+    title = st.text_input("Hike Title (optional)", value="My Hike", key="upload_title")
+    hike_date = st.date_input("Hike Date", value=datetime.now().date(), key="upload_date")
 
     notes = st.text_area("Add any notes about this hike (optional)",
-                         placeholder="E.g., Weather was great, trail was muddy, etc.")
+                         placeholder="E.g., Weather was great, trail was muddy, etc.",
+                         key="upload_notes")
 
     if st.button("Save Hike", type="primary"):
         if not gpx_file:
@@ -139,6 +155,8 @@ elif page == "Upload Hike":
 
                 st.success(f"Hike saved successfully with ID {hike_id}!")
                 st.balloons()
+                st.session_state.reset_upload_form = True
+                st.rerun()
 
 elif page == "History":
     st.title("Hike History")
@@ -209,7 +227,13 @@ elif page == "History":
                         map_center = points[0]
                         m = folium.Map(location=map_center, zoom_start=13)
                         folium.PolyLine(points, color="blue", weight=2.5, opacity=1).add_to(m)
-                        st_folium(m, width=700, height=500)
+                        st_folium(
+                            m,
+                            width=700,
+                            height=500,
+                            key=f"history_map_{hike_id}",
+                            returned_objects=[]
+                        )
                     else:
                         st.warning("No points found in the GPX file to display on the map.")
                 else:
