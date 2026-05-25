@@ -25,7 +25,7 @@ st.sidebar.markdown("Your personal hiking companion + AI buddy.")
 # Navigation
 page = st.sidebar.selectbox(
     "Navigate",
-    ["Dashboard", "Upload Hike", "History", "Chat with TrailBuddy"],  # noqa
+    ["Dashboard", "Upload Hike", "History", "Ranking", "Chat with TrailBuddy"],  # noqa
     help="Choose a section"
 )
 
@@ -195,7 +195,14 @@ elif page == "Upload Hike":
 elif page == "History":
     st.title("Hike History")
 
-    from utils.db import get_all_hikes, delete_hike, update_hike
+    from utils.db import (
+        get_all_hikes,
+        delete_hike,
+        update_hike,
+        get_ranking_position,
+        add_hike_to_ranking,
+        remove_hike_from_ranking,
+    )
     import glob
 
     if "editing_hike_id" not in st.session_state:
@@ -213,7 +220,8 @@ elif page == "History":
 
         for hike in hikes:
             hike_id = hike["id"]
-            col1, col2, col3, col4, col5, col6, col7 = st.columns([3, 2, 1.5, 1.5, 1.25, 1.25, 1.25])
+            rank_position = get_ranking_position(hike_id)
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([3, 2, 1.5, 1.5, 1.1, 1.1, 1.1, 1.3])
             with col1:
                 st.markdown(f"**{hike['title'] or 'Untitled'}**")
             with col2:
@@ -243,6 +251,19 @@ elif page == "History":
                     st.session_state.editing_hike_id = None
                     st.session_state.confirm_delete_id = None
                     st.rerun()
+            with col8:
+                if rank_position is None:
+                    if st.button("🏆", key=f"rank_add_btn_{hike_id}", help="Add hike to ranking"):
+                        add_hike_to_ranking(hike_id)
+                        st.rerun()
+                else:
+                    if st.button(
+                        "❌",
+                        key=f"rank_remove_btn_{hike_id}",
+                        help="Remove hike from ranking",
+                    ):
+                        remove_hike_from_ranking(hike_id)
+                        st.rerun()
 
             # View details and map
             if st.session_state.get("viewing_hike_id") == hike_id:
@@ -318,6 +339,48 @@ elif page == "History":
                         st.rerun()
 
             st.divider()
+
+elif page == "Ranking":
+    st.title("🏆 Top 10 Ranking")
+
+    from utils.db import get_ranked_hikes, move_ranking_position, remove_hike_from_ranking
+
+    ranked_hikes = get_ranked_hikes()
+
+    st.caption("Add hikes from History, then reorder them here.")
+
+    if not ranked_hikes:
+        st.info("No hikes are ranked yet. Go to History and click the trophy button to add one.")
+    else:
+        for index, hike in enumerate(ranked_hikes):
+            hike_id = hike["id"]
+            rank_position = hike["rank_position"]
+            is_first = index == 0
+            is_last = index == len(ranked_hikes) - 1
+
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.7, 3, 1.6, 1.2, 1.2, 0.8, 0.8, 1.0])
+            with col1:
+                st.markdown(f"**{rank_position}.**")
+            with col2:
+                st.markdown(f"**{hike['title'] or 'Untitled'}**")
+            with col3:
+                st.text(hike["hike_date"])
+            with col4:
+                st.text(f"{hike['distance'] or 0:.1f} km")
+            with col5:
+                st.text(f"{hike['elevation_gain'] or 0:.0f} m")
+            with col6:
+                if st.button("⬆️", key=f"rank_up_{hike_id}", help="Move up", disabled=is_first):
+                    move_ranking_position(hike_id, "up")
+                    st.rerun()
+            with col7:
+                if st.button("⬇️", key=f"rank_down_{hike_id}", help="Move down", disabled=is_last):
+                    move_ranking_position(hike_id, "down")
+                    st.rerun()
+            with col8:
+                if st.button("❌", key=f"rank_remove_{hike_id}", help="Remove from ranking"):
+                    remove_hike_from_ranking(hike_id)
+                    st.rerun()
 
 elif page == "Chat with TrailBuddy":
     from utils.rag import ask_trailbuddy, rebuild_vectorstore
