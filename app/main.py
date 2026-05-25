@@ -84,12 +84,12 @@ elif page == "Upload Hike":
 
     # Defaults used to reset the upload form after a successful save.
     upload_defaults = {
-        "upload_gpx": None,
-        "upload_csv": None,
         "upload_title": "My Hike",
         "upload_date": datetime.now().date(),
         "upload_notes": ""
     }
+
+    upload_form_version = st.session_state.get("upload_form_version", 0)
 
     # Streamlit widgets can only be updated before they're instantiated.
     # Apply the reset at the top of the next rerun.
@@ -99,9 +99,17 @@ elif page == "Upload Hike":
 
     col1, col2 = st.columns(2)
     with col1:
-        gpx_file = st.file_uploader("Upload GPX route file", type=["gpx"], key="upload_gpx")
+        gpx_file = st.file_uploader(
+            "Upload GPX route file",
+            type=["gpx"],
+            key=f"upload_gpx_{upload_form_version}"
+        )
     with col2:
-        csv_file = st.file_uploader("Upload CSV (lap times / splits) file", type=["csv"], key="upload_csv")
+        csv_file = st.file_uploader(
+            "Upload CSV (lap times / splits) file",
+            type=["csv"],
+            key=f"upload_csv_{upload_form_version}"
+        )
 
     title = st.text_input("Hike Title (optional)", value="My Hike", key="upload_title")
     hike_date = st.date_input("Hike Date", value=datetime.now().date(), key="upload_date")
@@ -110,7 +118,32 @@ elif page == "Upload Hike":
                          placeholder="E.g., Weather was great, trail was muddy, etc.",
                          key="upload_notes")
 
-    if st.button("Save Hike", type="primary"):
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stButton"] {
+            display: inline-block;
+            margin-right: 0.5rem;
+            vertical-align: top;
+        }
+
+        div[data-testid="stButton"] > button {
+            width: 180px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    save_hike_clicked = st.button("Save Hike", type="primary")
+    reset_form_clicked = st.button("Reset to Defaults")
+
+    if reset_form_clicked:
+        st.session_state.reset_upload_form = True
+        st.session_state.upload_form_version = upload_form_version + 1
+        st.rerun()
+
+    if save_hike_clicked:
         if not gpx_file:
             st.error("Please upload a GPX file")
         else:
@@ -156,6 +189,7 @@ elif page == "Upload Hike":
                 st.success(f"Hike saved successfully with ID {hike_id}!")
                 st.balloons()
                 st.session_state.reset_upload_form = True
+                st.session_state.upload_form_version = upload_form_version + 1
                 st.rerun()
 
 elif page == "History":
