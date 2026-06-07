@@ -198,7 +198,8 @@ def move_ranking_position(hike_id: int, direction: str):
 
     target_position = current_position - 1 if direction == "up" else current_position + 1
 
-    cursor.execute("UPDATE ranking SET rank_position = -1 WHERE hike_id = ?", (hike_id,))
+    temp_position = -current_position
+    cursor.execute("UPDATE ranking SET rank_position = ? WHERE hike_id = ?", (temp_position, hike_id))
     cursor.execute(
         "UPDATE ranking SET rank_position = ? WHERE rank_position = ?",
         (current_position, target_position)
