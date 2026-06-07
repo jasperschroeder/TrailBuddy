@@ -254,8 +254,11 @@ elif page == "History":
             with col8:
                 if rank_position is None:
                     if st.button("🏆", key=f"rank_add_btn_{hike_id}", help="Add hike to ranking"):
-                        add_hike_to_ranking(hike_id)
-                        st.rerun()
+                        new_position = add_hike_to_ranking(hike_id)
+                        if new_position is None:
+                            st.warning("Ranking is full (max 10). Remove a hike from Ranking first.")
+                        else:
+                            st.rerun()
                 else:
                     if st.button(
                         "❌",
