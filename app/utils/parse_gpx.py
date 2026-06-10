@@ -1,5 +1,5 @@
 import gpxpy
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def parse_gpx_file(gpx_file) -> dict:
@@ -60,7 +60,7 @@ def parse_gpx_file(gpx_file) -> dict:
             "elevation_gain": round(elevation_gain, 1),  # in meters
             "duration_minutes": duration_minutes,
             "title": gpx.name or "Unnamed Hike",
-            "date": start_time.strftime("%Y-%m-%d") if start_time else datetime.now().strftime("%Y-%m-%d"),
+            "date": start_time.strftime("%Y-%m-%d") if start_time else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "points": points
         }
 
@@ -71,6 +71,6 @@ def parse_gpx_file(gpx_file) -> dict:
             "elevation_gain": 0.0,
             "duration_minutes": None,
             "title": "Unnamed Hike",
-            "date": datetime.now().strftime("%Y-%m-%d"),
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "points": []
         }

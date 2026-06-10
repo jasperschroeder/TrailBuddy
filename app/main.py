@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import streamlit as st
 import pandas as pd
@@ -7,6 +7,7 @@ from streamlit_folium import st_folium
 from utils.db import initialize_db as init_db
 from utils.parse_gpx import parse_gpx_file
 from utils.parse_csv import parse_csv_file
+from utils.weather import fetch_weather_cached
 
 # Page configuration
 st.set_page_config(
@@ -85,7 +86,7 @@ elif page == "Upload Hike":
     # Defaults used to reset the upload form after a successful save.
     upload_defaults = {
         "upload_title": "My Hike",
-        "upload_date": datetime.now().date(),
+        "upload_date": datetime.now(timezone.utc).date(),
         "upload_notes": ""
     }
 
@@ -112,7 +113,7 @@ elif page == "Upload Hike":
         )
 
     title = st.text_input("Hike Title (optional)", value="My Hike", key="upload_title")
-    hike_date = st.date_input("Hike Date", value=datetime.now().date(), key="upload_date")
+    hike_date = st.date_input("Hike Date", value=datetime.now(timezone.utc).date(), key="upload_date")
 
     notes = st.text_area("Add any notes about this hike (optional)",
                          placeholder="E.g., Weather was great, trail was muddy, etc.",
@@ -275,12 +276,53 @@ elif page == "History":
                 st.write(f"**Elevation Gain:** {hike['elevation_gain'] or 0:.0f} m")
                 st.write(f"**Duration:** {hike.get('duration_minutes', 'N/A')} min")
                 st.write(f"**Notes:** {hike.get('notes', '')}")
-                # Try to find the GPX file for this hike
-                gpx_pattern = f"data/hikes/hike_{hike_id}_*.gpx"
-                gpx_files = glob.glob(gpx_pattern)
+                # Try to find the GPX file for this hike in known locations
+                candidates = [
+                    f"data/hikes/hike_{hike_id}_*.gpx",
+                    f"app/data/hikes/hike_{hike_id}_*.gpx",
+                ]
+                gpx_files = []
+                for pattern in candidates:
+                    gpx_files.extend(glob.glob(pattern))
+
+                # Fallback: if DB stored a filename, try to find it directly
+                if not gpx_files and hike.get("gpx_filename"):
+                    for base in ["data/hikes", "app/data/hikes"]:
+                        candidate_path = f"{base}/{hike.get('gpx_filename')}"
+                        if Path(candidate_path).exists():
+                            gpx_files.append(candidate_path)
+                            break
+
                 if gpx_files:
                     gpx_data = parse_gpx_file(gpx_files[0])
                     points = gpx_data.get("points", [])
+
+                    # Fetch and display weather snapshot for the hike (display-only)
+                    try:
+                        if points:
+                            coord = points[0]
+                            date_str = gpx_data.get("date") or hike.get("hike_date")
+                            cache_key = f"hike_{hike_id}"
+                            weather = fetch_weather_cached(coord[0], coord[1], date_str, cache_key=cache_key)
+                            if weather:
+                                with st.expander("Weather on Hike", expanded=False):
+                                    st.write(
+                                        f"**Condition:** {weather.get('condition', 'N/A')}"
+                                    )
+                                    st.write(
+                                        f"Avg temp: {weather.get('avg_temp_c', 'N/A')} °C"
+                                    )
+                                    st.write(
+                                        f"Precipitation: {weather.get('total_precip_mm', 'N/A')} mm"
+                                    )
+                                    st.write(
+                                        f"Avg wind: {weather.get('avg_wind_kmh', 'N/A')} km/h"
+                                    )
+                            else:
+                                st.info("Weather data unavailable")
+                    except Exception:
+                        st.info("Weather data unavailable")
+
                     if points:
                         map_center = points[0]
                         m = folium.Map(location=map_center, zoom_start=13)
