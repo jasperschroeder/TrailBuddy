@@ -108,13 +108,27 @@ if page == "Dashboard":
                 st.rerun()
 
     st.subheader("Recent Hikes")
-    recent_df = df.sort_values('hike_date', ascending=False).head(5)
+    recent_df = df.sort_values('hike_date', ascending=False).head(5).copy()
     # Ensure columns exist in case some rows are old
     for col in ["difficulty_level", "difficulty_score"]:
         if col not in recent_df.columns:
             recent_df[col] = None
-            
-    display_df = recent_df[["title", "hike_date", "distance", "elevation_gain", "difficulty_level", "difficulty_score"]]
+
+    # Format Date (remove time) and Title (Capitalize and remove underscores)
+    recent_df['hike_date'] = recent_df['hike_date'].dt.strftime('%Y-%m-%d')
+    recent_df['title'] = recent_df['title'].apply(lambda x: str(x).replace('_', ' ').title() if x else "Untitled")
+
+    # Rename columns for display
+    display_df = recent_df[[
+        "title", "hike_date", "distance", "elevation_gain", "difficulty_level", "difficulty_score"
+    ]].rename(columns={
+        "title": "Hike",
+        "hike_date": "Date",
+        "distance": "Distance (km)",
+        "elevation_gain": "Elevation (m)",
+        "difficulty_level": "Difficulty Level",
+        "difficulty_score": "Difficulty Score"
+    })
     st.dataframe(display_df, width="stretch", hide_index=True)
 elif page == "Upload Hike":
     st.title("Upload a New Hike")
