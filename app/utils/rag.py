@@ -38,6 +38,8 @@ def _build_documents(hikes: list[dict]) -> list[str]:
             f"Distance: {hike.get('distance', 0)} km\n"
             f"Elevation Gain: {hike.get('elevation_gain', 0)} m\n"
             f"Duration: {hike.get('duration_minutes', 'unknown')} minutes\n"
+            f"Difficulty Score: {hike.get('difficulty_score', 'N/A')}\n"
+            f"Difficulty Level: {hike.get('difficulty_level', 'N/A')}\n"
             f"Notes: {hike.get('notes', 'No notes provided')}"
         )
         docs.append(text)
@@ -96,7 +98,8 @@ _SQL_SCHEMA = (
     "Table: hikes\n"
     "Columns: id INTEGER, hike_date TEXT (YYYY-MM-DD), title TEXT, "
     "distance REAL (km), elevation_gain REAL (meters), "
-    "duration_minutes INTEGER, notes TEXT, created_at TEXT"
+    "duration_minutes INTEGER, notes TEXT, "
+    "difficulty_score REAL, difficulty_level TEXT, created_at TEXT"
 )
 
 
@@ -126,6 +129,56 @@ def query_hikes_db(sql: str) -> str:
         return f"SQL error: {exc}"
 
 
+def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str = "") -> dict:
+    """
+    Predict hike difficulty using the LLM and RAG guidelines.
+    """
+    guidelines_path = Path(__file__).parent / "difficulty_guidelines.md"
+    guidelines = ""
+    if guidelines_path.exists():
+        with open(guidelines_path, "r") as f:
+            guidelines = f.read()
+
+    prompt = f"""
+    You are an expert hiking guide. Based on the following guidelines and hike details,
+    predict a numerical difficulty score (1-50) and a level (Easy, Moderate, Challenging, Hard, Expert).
+
+    GUIDELINES:
+    {guidelines}
+
+    HIKE DETAILS:
+    - Distance: {distance} km
+    - Elevation Gain: {elevation_gain} m
+    - Notes: {notes}
+
+    Return ONLY a JSON object with keys: "difficulty_score" (float) and "difficulty_level" (string).
+    """
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+    try:
+        # Clean response if LLM adds markdown backticks
+        content = response.content.strip()
+        if content.startswith("```json"):
+            content = content[7:-3].strip()
+        elif content.startswith("```"):
+            content = content[3:-3].strip()
+
+        result = json.loads(content)
+        return {
+            "difficulty_score": float(result.get("difficulty_score", 0.0)),
+            "difficulty_level": str(result.get("difficulty_level", "Unknown"))
+        }
+    except Exception as e:
+        print(f"Error parsing LLM response for difficulty: {e}")
+        # Fallback to local calculation if LLM fails
+        from utils.difficulty import calculate_difficulty_score, get_difficulty_level
+        score = calculate_difficulty_score(distance, elevation_gain)
+        return {
+            "difficulty_score": score,
+            "difficulty_level": get_difficulty_level(score)
+        }
+
+
 # Tool 2 - RAG for semantic search over notes and descriptions
 
 @tool
@@ -150,11 +203,13 @@ _LLM_WITH_TOOLS = llm.bind_tools(_TOOLS)
 _SYSTEM_CONTENT = (
     "You are TrailBuddy, a friendly and encouraging hiking companion.\n\n"
     "You have two tools:\n"
-    "- query_hikes_db: use for numbers, counts, sums, rankings, date filters.\n"
+    "- query_hikes_db: use for numbers, counts, sums, rankings, date filters, and difficulty analysis.\n"
     f"  {_SQL_SCHEMA}\n"
-    "- search_hike_notes: use for semantic/free-text search over hike notes.\n\n"
+    "- search_hike_notes: use for semantic/free-text search over hike notes and feelings.\n\n"
+    "Hikes now have a difficulty_score and difficulty_level.\n"
+    "Levels: Easy, Moderate, Challenging, Hard, Expert.\n"
     "Use one or both tools as needed, then give a clear, friendly answer with "
-    "specific numbers and dates when available. "
+    "specific numbers, dates, and difficulty information when available. "
     "If you cannot find the information, say so honestly."
 )
 _SYSTEM_PROMPT = SystemMessage(content=_SYSTEM_CONTENT)

@@ -34,9 +34,21 @@ def initialize_db():
                 gpx_filename TEXT,
                 csv_filename TEXT,
                 notes TEXT,
+                difficulty_score REAL,
+                difficulty_level TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+    # Migration for existing DBs: add columns if they don't exist
+    try:
+        cursor.execute("ALTER TABLE hikes ADD COLUMN difficulty_score REAL")
+    except sqlite3.OperationalError:
+        pass  # already exists
+    try:
+        cursor.execute("ALTER TABLE hikes ADD COLUMN difficulty_level TEXT")
+    except sqlite3.OperationalError:
+        pass  # already exists
 
     cursor.execute('''
             CREATE TABLE IF NOT EXISTS ranking (
@@ -59,8 +71,8 @@ def save_hike(data: dict):
     cursor.execute('''
         INSERT INTO hikes
         (title, hike_date, distance, elevation_gain, duration_minutes,
-         gpx_filename, csv_filename, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         gpx_filename, csv_filename, notes, difficulty_score, difficulty_level)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         data.get("title"),
         data.get("hike_date"),
@@ -69,13 +81,28 @@ def save_hike(data: dict):
         data.get("duration_minutes"),
         data.get("gpx_filename"),
         data.get("csv_filename"),
-        data.get("notes")
+        data.get("notes"),
+        data.get("difficulty_score"),
+        data.get("difficulty_level")
     ))
 
     conn.commit()
     hike_id = cursor.lastrowid
     conn.close()
     return hike_id
+
+
+def update_hike_difficulty(hike_id: int, score: float, level: str):
+    """Update difficulty score and level for an existing hike."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE hikes
+        SET difficulty_score = ?, difficulty_level = ?
+        WHERE id = ?
+    ''', (score, level, hike_id))
+    conn.commit()
+    conn.close()
 
 
 def get_all_hikes():

@@ -47,7 +47,7 @@ if page == "Dashboard":
     df['hike_date'] = pd.to_datetime(df['hike_date'])
 
     # Summary cards
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Total Hikes", len(df))
     with col2:
@@ -59,6 +59,12 @@ if page == "Dashboard":
     with col4:
         avg_distance = df['distance'].mean()
         st.metric("Avg Distance", f"{avg_distance:.1f} km")
+    with col5:
+        if 'difficulty_score' in df.columns:
+            avg_diff = df['difficulty_score'].mean()
+            st.metric("Avg Difficulty", f"{avg_diff:.1f}")
+        else:
+            st.metric("Avg Difficulty", "N/A")
 
     # Charts
     colA, colB = st.columns(2)
@@ -75,9 +81,40 @@ if page == "Dashboard":
 
     st.divider()
 
+    # Backfill section
+    if 'difficulty_score' not in df.columns or df['difficulty_score'].isnull().any():
+        with st.expander("🛠️ Admin Tools"):
+            st.write("Some hikes are missing difficulty scores. You can backfill them using AI prediction.")
+            if st.button("Predict Difficulty for All Hikes"):
+                from utils.db import update_hike_difficulty
+                from utils.rag import predict_hike_difficulty
+
+                hikes_to_update = [h for h in hikes if h.get('difficulty_score') is None]
+                progress_bar = st.progress(0)
+                for i, hike in enumerate(hikes_to_update):
+                    with st.spinner(f"Predicting for {hike['title']}..."):
+                        prediction = predict_hike_difficulty(
+                            hike.get('distance', 0),
+                            hike.get('elevation_gain', 0),
+                            hike.get('notes', "")
+                        )
+                        update_hike_difficulty(
+                            hike['id'],
+                            prediction['difficulty_score'],
+                            prediction['difficulty_level']
+                        )
+                    progress_bar.progress((i + 1) / len(hikes_to_update))
+                st.success("All hikes updated!")
+                st.rerun()
+
     st.subheader("Recent Hikes")
     recent_df = df.sort_values('hike_date', ascending=False).head(5)
-    display_df = recent_df[["title", "hike_date", "distance", "elevation_gain", "duration_minutes"]]
+    # Ensure columns exist in case some rows are old
+    for col in ["difficulty_level", "difficulty_score"]:
+        if col not in recent_df.columns:
+            recent_df[col] = None
+            
+    display_df = recent_df[["title", "hike_date", "distance", "elevation_gain", "difficulty_level", "difficulty_score"]]
     st.dataframe(display_df, width="stretch", hide_index=True)
 elif page == "Upload Hike":
     st.title("Upload a New Hike")
@@ -164,19 +201,37 @@ elif page == "Upload Hike":
 
                 # Parse files
                 from utils.db import save_hike
+                from utils.difficulty import calculate_difficulty_score, get_difficulty_level
+                from utils.rag import predict_hike_difficulty
+
                 gpx_data = parse_gpx_file(gpx_file)
                 csv_data = parse_csv_file(csv_file) if csv_file else {}
+
+                distance = gpx_data.get("distance", 0.0)
+                elevation_gain = gpx_data.get("elevation_gain", 0.0)
+
+                # Get initial heuristic difficulty
+                heuristic_score = calculate_difficulty_score(distance, elevation_gain)
+                heuristic_level = get_difficulty_level(heuristic_score)
+
+                # Try to refine with LLM/RAG if possible
+                with st.spinner("Predicting hike difficulty with AI..."):
+                    llm_prediction = predict_hike_difficulty(distance, elevation_gain, notes)
+                    difficulty_score = llm_prediction.get("difficulty_score", heuristic_score)
+                    difficulty_level = llm_prediction.get("difficulty_level", heuristic_level)
 
                 # Prepare data for DB
                 save_data = {
                     "title": title,
                     "hike_date": str(hike_date),
-                    "distance": gpx_data.get("distance", 0.0),
-                    "elevation_gain": gpx_data.get("elevation_gain", 0.0),
+                    "distance": distance,
+                    "elevation_gain": elevation_gain,
                     "duration_minutes": gpx_data.get("duration_minutes") or csv_data.get("duration_from_csv"),
                     "gpx_filename": gpx_file.name,
                     "csv_filename": csv_file.name if csv_file else None,
-                    "notes": notes
+                    "notes": notes,
+                    "difficulty_score": difficulty_score,
+                    "difficulty_level": difficulty_level
                 }
 
                 hike_id = save_hike(save_data)
@@ -222,7 +277,7 @@ elif page == "History":
         for hike in hikes:
             hike_id = hike["id"]
             rank_position = get_ranking_position(hike_id)
-            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([3, 2, 1.5, 1.5, 1.1, 1.1, 1.1, 1.3])
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([2.5, 1.5, 1.2, 1.2, 1.5, 1.0, 1.0, 1.0])
             with col1:
                 st.markdown(f"**{hike['title'] or 'Untitled'}**")
             with col2:
@@ -232,6 +287,10 @@ elif page == "History":
             with col4:
                 st.text(f"{hike['elevation_gain'] or 0:.0f} m gain")
             with col5:
+                level = hike.get("difficulty_level") or "N/A"
+                score = hike.get("difficulty_score") or 0.0
+                st.text(f"Diff: {level} ({score:.1f})")
+            with col6:
                 if st.button("✏️", key=f"edit_btn_{hike_id}", help="Edit hike"):
                     st.session_state.editing_hike_id = hike_id
                     st.session_state.confirm_delete_id = None
