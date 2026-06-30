@@ -1,8 +1,10 @@
 import sqlite3
 from pathlib import Path
+from contextlib import contextmanager
 
-# Ensure data directory exists
-DATA_DIR = Path("data")
+# Ensure data directory exists relative to the project root
+ROOT_DIR = Path(__file__).parents[2]
+DATA_DIR = ROOT_DIR / "data"
 HIKES_DIR = DATA_DIR / "hikes"
 HIKES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -11,23 +13,31 @@ DB_PATH = DATA_DIR / "trailbuddy.db"
 _RANKING_POSITION_QUERY = "SELECT rank_position FROM ranking WHERE hike_id = ?"
 
 
+@contextmanager
 def get_db_connection():
-    """Establish a connection to the SQLite database."""
+    """Establish a connection to the SQLite database as a context manager."""
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def initialize_db():
     """Initialize the database tables if they don't exist."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    cursor.execute('''
-            CREATE TABLE IF NOT EXISTS hikes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hike_date TEXT NOT NULL,
-                title TEXT,
+        cursor.execute('''
+                CREATE TABLE IF NOT EXISTS hikes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hike_date TEXT NOT NULL,
+                    title TEXT,
                 distance REAL,
                 elevation_gain REAL,
                 duration_minutes INTEGER,
@@ -40,81 +50,71 @@ def initialize_db():
             )
         ''')
 
-    # Migration for existing DBs: add columns if they don't exist
-    try:
-        cursor.execute("ALTER TABLE hikes ADD COLUMN difficulty_score REAL")
-    except sqlite3.OperationalError:
-        pass  # already exists
-    try:
-        cursor.execute("ALTER TABLE hikes ADD COLUMN difficulty_level TEXT")
-    except sqlite3.OperationalError:
-        pass  # already exists
+        # Migration for existing DBs: add columns if they don't exist
+        try:
+            cursor.execute("ALTER TABLE hikes ADD COLUMN difficulty_score REAL")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        try:
+            cursor.execute("ALTER TABLE hikes ADD COLUMN difficulty_level TEXT")
+        except sqlite3.OperationalError:
+            pass  # already exists
 
-    cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ranking (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hike_id INTEGER NOT NULL UNIQUE,
-                rank_position INTEGER NOT NULL UNIQUE,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-    conn.commit()
-    conn.close()
+        cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ranking (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hike_id INTEGER NOT NULL UNIQUE,
+                    rank_position INTEGER NOT NULL UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
 
 
 def save_hike(data: dict):
     """Save a new hike to the database."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    cursor.execute('''
-        INSERT INTO hikes
-        (title, hike_date, distance, elevation_gain, duration_minutes,
-         gpx_filename, csv_filename, notes, difficulty_score, difficulty_level)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        data.get("title"),
-        data.get("hike_date"),
-        data.get("distance"),
-        data.get("elevation_gain"),
-        data.get("duration_minutes"),
-        data.get("gpx_filename"),
-        data.get("csv_filename"),
-        data.get("notes"),
-        data.get("difficulty_score"),
-        data.get("difficulty_level")
-    ))
+        cursor.execute('''
+            INSERT INTO hikes
+            (title, hike_date, distance, elevation_gain, duration_minutes,
+            gpx_filename, csv_filename, notes, difficulty_score, difficulty_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data.get("title"),
+            data.get("hike_date"),
+            data.get("distance"),
+            data.get("elevation_gain"),
+            data.get("duration_minutes"),
+            data.get("gpx_filename"),
+            data.get("csv_filename"),
+            data.get("notes"),
+            data.get("difficulty_score"),
+            data.get("difficulty_level")
+        ))
 
-    conn.commit()
-    hike_id = cursor.lastrowid
-    conn.close()
-    return hike_id
+        return cursor.lastrowid
 
 
 def update_hike_difficulty(hike_id: int, score: float, level: str):
     """Update difficulty score and level for an existing hike."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE hikes
-        SET difficulty_score = ?, difficulty_level = ?
-        WHERE id = ?
-    ''', (score, level, hike_id))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE hikes
+            SET difficulty_score = ?, difficulty_level = ?
+            WHERE id = ?
+        ''', (score, level, hike_id))
 
 
 def get_all_hikes():
     """Return all hikes as list of dicts. With better error handling."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM hikes ORDER BY hike_date DESC")
-        rows = cursor.fetchall()
-        conn.close()
-        hikes = [dict(row) for row in rows]
-        return hikes
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM hikes ORDER BY hike_date DESC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
     except Exception as e:
         print(f"ERROR in get_all_hikes: {e}")
         return []
@@ -123,19 +123,18 @@ def get_all_hikes():
 def get_ranked_hikes():
     """Return the current ranking joined with hike details."""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT r.rank_position, h.*
-            FROM ranking r
-            JOIN hikes h ON h.id = r.hike_id
-            ORDER BY r.rank_position ASC
-            """
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT r.rank_position, h.*
+                FROM ranking r
+                JOIN hikes h ON h.id = r.hike_id
+                ORDER BY r.rank_position ASC
+                """
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
     except Exception as e:
         print(f"ERROR in get_ranked_hikes: {e}")
         return []
@@ -143,60 +142,52 @@ def get_ranked_hikes():
 
 def get_ranking_position(hike_id: int):
     """Return the ranking position for a hike, or None if not ranked."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(_RANKING_POSITION_QUERY, (hike_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row["rank_position"] if row else None
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(_RANKING_POSITION_QUERY, (hike_id,))
+        row = cursor.fetchone()
+        return row["rank_position"] if row else None
 
 
 def add_hike_to_ranking(hike_id: int):
     """Add a hike to the bottom of the top 10 ranking."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    cursor.execute(_RANKING_POSITION_QUERY, (hike_id,))
-    existing = cursor.fetchone()
-    if existing:
-        conn.close()
-        return existing["rank_position"]
+        cursor.execute(_RANKING_POSITION_QUERY, (hike_id,))
+        existing = cursor.fetchone()
+        if existing:
+            return existing["rank_position"]
 
-    cursor.execute("SELECT COALESCE(MAX(rank_position), 0) AS max_position FROM ranking")
-    max_position = cursor.fetchone()["max_position"] or 0
-    if max_position >= 10:
-        conn.close()
-        return None
+        cursor.execute("SELECT COALESCE(MAX(rank_position), 0) AS max_position FROM ranking")
+        max_position = cursor.fetchone()["max_position"] or 0
+        if max_position >= 10:
+            return None
 
-    new_position = max_position + 1
-    cursor.execute(
-        "INSERT INTO ranking (hike_id, rank_position) VALUES (?, ?)",
-        (hike_id, new_position)
-    )
-    conn.commit()
-    conn.close()
-    return new_position
+        new_position = max_position + 1
+        cursor.execute(
+            "INSERT INTO ranking (hike_id, rank_position) VALUES (?, ?)",
+            (hike_id, new_position)
+        )
+        return new_position
 
 
 def remove_hike_from_ranking(hike_id: int):
     """Remove a hike from the ranking and close any gaps."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(_RANKING_POSITION_QUERY, (hike_id,))
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return False
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(_RANKING_POSITION_QUERY, (hike_id,))
+        row = cursor.fetchone()
+        if not row:
+            return False
 
-    removed_position = row["rank_position"]
-    cursor.execute("DELETE FROM ranking WHERE hike_id = ?", (hike_id,))
-    cursor.execute(
-        "UPDATE ranking SET rank_position = rank_position - 1 WHERE rank_position > ?",
-        (removed_position,)
-    )
-    conn.commit()
-    conn.close()
-    return True
+        removed_position = row["rank_position"]
+        cursor.execute("DELETE FROM ranking WHERE hike_id = ?", (hike_id,))
+        cursor.execute(
+            "UPDATE ranking SET rank_position = rank_position - 1 WHERE rank_position > ?",
+            (removed_position,)
+        )
+        return True
 
 
 def move_ranking_position(hike_id: int, direction: str):
@@ -204,9 +195,9 @@ def move_ranking_position(hike_id: int, direction: str):
     if direction not in {"up", "down"}:
         return None
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT hike_id, rank_position FROM ranking WHERE hike_id = ?", (hike_id,))
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT hike_id, rank_position FROM ranking WHERE hike_id = ?", (hike_id,))
     current_row = cursor.fetchone()
     if not current_row:
         conn.close()

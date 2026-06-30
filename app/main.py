@@ -501,20 +501,20 @@ elif page == "Ranking":
                     st.rerun()
 
 elif page == "Chat with TrailBuddy":
-    from utils.rag import ask_trailbuddy, rebuild_vectorstore
+    from utils.rag import ask_trailbuddy, sync_vectorstore
 
     title_col, action_col = st.columns([6, 2], vertical_alignment="top")
     with title_col:
         st.markdown("## Chat with TrailBuddy")
         st.caption("Ask about your hikes or get personalized recommendations based on your notes")
     with action_col:
-        if st.button("🔄 Rebuild Vector DB", help="Re-index all hikes into the vector database"):
-            with st.spinner("Rebuilding vector database..."):
+        if st.button("🔄 Sync Vector DB", help="Add new hikes to the vector database"):
+            with st.spinner("Syncing vector database..."):
                 try:
-                    rebuild_vectorstore()
-                    st.success("Vector DB rebuilt successfully!")
+                    msg = sync_vectorstore()
+                    st.success(msg)
                 except Exception as e:
-                    st.error(f"Failed to rebuild vector DB: {e}")
+                    st.error(f"Failed to sync vector DB: {e}")
         if st.button("🧹 Clear Chat", help="Clear current chat history"):
             st.session_state.chat_messages = []
             st.rerun()

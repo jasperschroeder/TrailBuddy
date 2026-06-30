@@ -10,9 +10,10 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from utils.db import get_all_hikes, DB_PATH
 from pathlib import Path
 
-
 # Configuration
-DATA_DIR = Path("data")
+# Path relative to project root
+ROOT_DIR = Path(__file__).parents[2]
+DATA_DIR = ROOT_DIR / "data"
 CHROMA_PATH = DATA_DIR / "chroma_db"
 CHROMA_COLLECTION = "trailbuddy_hikes"
 
@@ -28,22 +29,25 @@ llm = ChatOllama(
 
 # Vectorstore helpers (RAG over notes / free-text)
 
-def _build_documents(hikes: list[dict]) -> list[str]:
-    docs = []
-    for hike in hikes:
-        text = (
-            f"Hike ID: {hike.get('id')}\n"
-            f"Title: {hike.get('title', 'Untitled')}\n"
-            f"Date: {hike.get('hike_date')}\n"
-            f"Distance: {hike.get('distance', 0)} km\n"
-            f"Elevation Gain: {hike.get('elevation_gain', 0)} m\n"
-            f"Duration: {hike.get('duration_minutes', 'unknown')} minutes\n"
-            f"Difficulty Score: {hike.get('difficulty_score', 'N/A')}\n"
-            f"Difficulty Level: {hike.get('difficulty_level', 'N/A')}\n"
-            f"Notes: {hike.get('notes', 'No notes provided')}"
-        )
-        docs.append(text)
-    return docs
+def _prepare_hike_doc(hike: dict) -> tuple[str, dict, str]:
+    """Format a single hike for indexing."""
+    text = (
+        f"Hike ID: {hike.get('id')}\n"
+        f"Title: {hike.get('title', 'Untitled')}\n"
+        f"Date: {hike.get('hike_date')}\n"
+        f"Distance: {hike.get('distance', 0)} km\n"
+        f"Elevation Gain: {hike.get('elevation_gain', 0)} m\n"
+        f"Duration: {hike.get('duration_minutes', 'unknown')} minutes\n"
+        f"Difficulty Score: {hike.get('difficulty_score', 'N/A')}\n"
+        f"Difficulty Level: {hike.get('difficulty_level', 'N/A')}\n"
+        f"Notes: {hike.get('notes', 'No notes provided')}"
+    )
+    metadata = {
+        "hike_id": hike.get('id'),
+        "hike_date": hike.get('hike_date') or "unknown"
+    }
+    doc_id = str(hike.get('id'))
+    return text, metadata, doc_id
 
 
 def _open_vectorstore() -> Chroma:
@@ -55,38 +59,53 @@ def _open_vectorstore() -> Chroma:
     )
 
 
-def _build_or_rebuild_collection() -> Chroma:
-    """Recreate the hikes collection content in-place (Windows lock-safe)."""
+def sync_vectorstore():
+    """Only adds missing hikes to the vector store."""
     hikes = get_all_hikes()
-    documents = _build_documents(hikes) if hikes else ["No hikes logged yet."]
+    if not hikes:
+        return "No hikes in the database to index."
 
-    # Delete collection entries instead of deleting DB files on disk.
+    vectorstore = _open_vectorstore()
+    
+    # Get existing IDs from Chroma
     try:
-        _open_vectorstore().delete_collection()
+        existing = vectorstore.get()
+        indexed_ids = set(existing['ids'])
     except Exception:
-        pass
+        indexed_ids = set()
 
-    return Chroma.from_texts(
-        texts=documents,
-        embedding=embeddings,
-        collection_name=CHROMA_COLLECTION,
-        persist_directory=str(CHROMA_PATH),
-    )
+    to_index = [h for h in hikes if str(h['id']) not in indexed_ids]
+
+    if not to_index:
+        return "Vectorstore is already up to date."
+
+    texts, metadatas, ids = [], [], []
+    for hike in to_index:
+        t, m, i = _prepare_hike_doc(hike)
+        texts.append(t)
+        metadatas.append(m)
+        ids.append(i)
+
+    # Incremental add
+    vectorstore.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+    return f"Successfully indexed {len(to_index)} new hikes."
 
 
 def get_or_create_vectorstore() -> Chroma:
     """Open existing collection, creating it on first use if needed."""
     try:
         vectorstore = _open_vectorstore()
-        _ = vectorstore._collection.count()
+        # Trigger sync in background or immediately if count is 0
+        sync_vectorstore()
         return vectorstore
     except Exception:
-        return _build_or_rebuild_collection()
+        sync_vectorstore()
+        return _open_vectorstore()
 
 
 def rebuild_vectorstore():
-    """Rebuild the hikes vector collection without deleting locked files."""
-    return _build_or_rebuild_collection()
+    """Legacy rebuild function, now performs a sync."""
+    return sync_vectorstore()
 
 
 # Tool 1 - SQL for structured and aggregate queries
