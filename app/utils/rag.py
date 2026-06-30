@@ -17,14 +17,29 @@ DATA_DIR = ROOT_DIR / "data"
 CHROMA_PATH = DATA_DIR / "chroma_db"
 CHROMA_COLLECTION = "trailbuddy_hikes"
 
-# Initialize embeddings and LLM (local)
-embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-base-en-v1.5")  # Optionally replace with all-MiniLM-L6-v2
+# Lazy initialization cache
+_embeddings = None
+_llm = None
 
-llm = ChatOllama(
-    model="qwen2.5:7b",
-    temperature=0.7,
-    num_ctx=4096,
-)
+
+def get_embeddings():
+    """Lazy-load embeddings model on first use."""
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-base-en-v1.5")
+    return _embeddings
+
+
+def get_llm():
+    """Lazy-load LLM on first use."""
+    global _llm
+    if _llm is None:
+        _llm = ChatOllama(
+            model="qwen2.5:7b",
+            temperature=0.7,
+            num_ctx=4096,
+        )
+    return _llm
 
 
 # Vectorstore helpers (RAG over notes / free-text)
@@ -54,7 +69,7 @@ def _open_vectorstore() -> Chroma:
     """Open the persisted hikes collection without rewriting it."""
     return Chroma(
         collection_name=CHROMA_COLLECTION,
-        embedding_function=embeddings,
+        embedding_function=get_embeddings(),
         persist_directory=str(CHROMA_PATH),
     )
 
@@ -173,7 +188,7 @@ def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str =
     Return ONLY a JSON object with keys: "difficulty_score" (float) and "difficulty_level" (string).
     """
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = get_llm().invoke([HumanMessage(content=prompt)])
     try:
         # Clean response if LLM adds markdown backticks
         content = response.content.strip()
@@ -217,7 +232,12 @@ def search_hike_notes(query: str) -> str:
 
 _TOOLS = [query_hikes_db, search_hike_notes]
 _TOOL_MAP = {t.name: t for t in _TOOLS}
-_LLM_WITH_TOOLS = llm.bind_tools(_TOOLS)
+
+
+def get_llm_with_tools():
+    """Lazy-load LLM with tools bound."""
+    return get_llm().bind_tools(_TOOLS)
+
 
 _SYSTEM_CONTENT = (
     "You are TrailBuddy, a friendly and encouraging hiking companion.\n\n"
@@ -238,9 +258,10 @@ def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
     """Run the hybrid tool-calling + RAG agent and return (answer, sources)."""
     messages = [_SYSTEM_PROMPT, HumanMessage(content=question)]
     sources: list[str] = []
+    llm_with_tools = get_llm_with_tools()
 
     for _ in range(10):  # safety cap on iterations
-        response = _LLM_WITH_TOOLS.invoke(messages)
+        response = llm_with_tools.invoke(messages)
         messages.append(response)
 
         if not response.tool_calls:
