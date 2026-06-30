@@ -42,6 +42,101 @@ def get_llm():
     return _llm
 
 
+def _extract_json_from_llm_response(content: str, expected_schema: dict = None) -> dict | None:
+    """Robustly extract and validate JSON from LLM response.
+    
+    Args:
+        content: Raw LLM response text
+        expected_schema: Optional dict mapping field names to (type, default_value) tuples
+        
+    Returns:
+        Parsed and validated JSON dict, or None if extraction fails
+    """
+    if not content:
+        return None
+    
+    content = content.strip()
+    
+    # Strategy 1: Try to extract JSON from markdown code blocks
+    json_patterns = [
+        r'```json\s*\n(.+?)\n```',  # ```json ... ```
+        r'```\s*\n(.+?)\n```',       # ``` ... ```
+        r'`([{\[].*?[}\]])`',         # `{...}` or `[...]`
+    ]
+    
+    for pattern in json_patterns:
+        matches = re.findall(pattern, content, re.DOTALL)
+        for match in matches:
+            try:
+                result = json.loads(match.strip())
+                if isinstance(result, dict):
+                    return _validate_json_schema(result, expected_schema)
+            except json.JSONDecodeError:
+                continue
+    
+    # Strategy 2: Find first valid JSON object or array in the text
+    # Look for { ... } or [ ... ] patterns
+    json_obj_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+    matches = re.findall(json_obj_pattern, content)
+    
+    for match in matches:
+        try:
+            result = json.loads(match)
+            if isinstance(result, dict):
+                return _validate_json_schema(result, expected_schema)
+        except json.JSONDecodeError:
+            continue
+    
+    # Strategy 3: Try parsing the entire content as JSON
+    try:
+        result = json.loads(content)
+        if isinstance(result, dict):
+            return _validate_json_schema(result, expected_schema)
+    except json.JSONDecodeError:
+        pass
+    
+    return None
+
+
+def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:
+    """Validate and coerce JSON data to expected schema.
+    
+    Args:
+        data: Parsed JSON dict
+        expected_schema: Dict mapping field names to (type, default_value) tuples
+        
+    Returns:
+        Validated dict with coerced types
+    """
+    if not expected_schema:
+        return data
+    
+    validated = {}
+    for field, (expected_type, default_value) in expected_schema.items():
+        value = data.get(field, default_value)
+        
+        if value is None:
+            validated[field] = default_value
+            continue
+        
+        # Type coercion with error handling
+        try:
+            if expected_type == float:
+                validated[field] = float(value)
+            elif expected_type == int:
+                validated[field] = int(value)
+            elif expected_type == str:
+                validated[field] = str(value)
+            elif expected_type == bool:
+                validated[field] = bool(value)
+            else:
+                validated[field] = value
+        except (ValueError, TypeError):
+            validated[field] = default_value
+    
+    return validated
+
+
 # Vectorstore helpers (RAG over notes / free-text)
 
 def _prepare_hike_doc(hike: dict) -> tuple[str, dict, str]:
@@ -125,8 +220,15 @@ def rebuild_vectorstore():
 
 # Tool 1 - SQL for structured and aggregate queries
 
-# Only allowing read-only SELECT queries for safety.
+# Comprehensive SQL injection protection
 _ALLOWED_SQL = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+
+# Dangerous keywords that should never appear in user queries
+_DANGEROUS_SQL_KEYWORDS = [
+    'DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE',
+    'PRAGMA', 'ATTACH', 'DETACH', 'EXEC', 'EXECUTE',
+    'REPLACE', 'TRUNCATE', 'GRANT', 'REVOKE'
+]
 
 _SQL_SCHEMA = (
     "Table: hikes\n"
@@ -135,6 +237,45 @@ _SQL_SCHEMA = (
     "duration_minutes INTEGER, notes TEXT, "
     "difficulty_score REAL, difficulty_level TEXT, created_at TEXT"
 )
+
+
+def _validate_sql_query(sql: str) -> tuple[bool, str]:
+    """Validate SQL query for security. Returns (is_valid, error_message)."""
+    # Remove comments to prevent hidden commands
+    sql_no_comments = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
+    sql_no_comments = re.sub(r'/\*.*?\*/', '', sql_no_comments, flags=re.DOTALL)
+    
+    # Check for multiple statements (semicolon-separated)
+    if ';' in sql_no_comments.rstrip(';'):
+        return False, "Error: multiple statements not allowed"
+    
+    # Check it starts with SELECT
+    if not _ALLOWED_SQL.match(sql_no_comments.strip()):
+        return False, "Error: only SELECT queries are permitted"
+    
+    # Check for dangerous keywords
+    sql_upper = sql_no_comments.upper()
+    for keyword in _DANGEROUS_SQL_KEYWORDS:
+        # Use word boundaries to avoid false positives in column names
+        if re.search(rf'\b{keyword}\b', sql_upper):
+            return False, f"Error: dangerous keyword '{keyword}' not allowed"
+    
+    # Ensure only querying the 'hikes' table or using it in joins
+    # This prevents querying system tables like sqlite_master
+    if 'FROM' in sql_upper:
+        # Extract table references after FROM
+        from_pattern = re.compile(
+            r'\bFROM\s+([\w,\s]+?)(?:\s+WHERE|\s+GROUP|\s+ORDER|\s+LIMIT|\s+JOIN|$)',
+            re.IGNORECASE
+        )
+        from_match = from_pattern.search(sql_no_comments)
+        if from_match:
+            tables = [t.strip().split()[0] for t in from_match.group(1).split(',')]
+            for table in tables:
+                if table.lower() not in ['hikes', 'ranking']:
+                    return False, f"Error: access to table '{table}' not allowed"
+    
+    return True, ""
 
 
 @tool
@@ -148,10 +289,15 @@ def query_hikes_db(sql: str) -> str:
     Use this tool for exact numbers, counts, sums, averages, rankings,
     or filtering by date / distance / elevation.
     """
-    if not _ALLOWED_SQL.match(sql.strip()):
-        return "Error: only SELECT queries are permitted."
+    # Multi-layer validation
+    is_valid, error_msg = _validate_sql_query(sql)
+    if not is_valid:
+        return error_msg
+    
     try:
         with sqlite3.connect(DB_PATH) as conn:
+            # Enable read-only mode for extra safety
+            conn.execute("PRAGMA query_only = ON")
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(sql.strip())
@@ -189,28 +335,27 @@ def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str =
     """
 
     response = get_llm().invoke([HumanMessage(content=prompt)])
-    try:
-        # Clean response if LLM adds markdown backticks
-        content = response.content.strip()
-        if content.startswith("```json"):
-            content = content[7:-3].strip()
-        elif content.startswith("```"):
-            content = content[3:-3].strip()
-
-        result = json.loads(content)
+    
+    # Use robust JSON extraction
+    result = _extract_json_from_llm_response(response.content, {
+        "difficulty_score": (float, None),
+        "difficulty_level": (str, None)
+    })
+    
+    if result:
         return {
-            "difficulty_score": float(result.get("difficulty_score", 0.0)),
-            "difficulty_level": str(result.get("difficulty_level", "Unknown"))
+            "difficulty_score": result.get("difficulty_score", 0.0),
+            "difficulty_level": result.get("difficulty_level", "Unknown")
         }
-    except Exception as e:
-        print(f"Error parsing LLM response for difficulty: {e}")
-        # Fallback to local calculation if LLM fails
-        from utils.difficulty import calculate_difficulty_score, get_difficulty_level
-        score = calculate_difficulty_score(distance, elevation_gain)
-        return {
-            "difficulty_score": score,
-            "difficulty_level": get_difficulty_level(score)
-        }
+    
+    # Fallback to local calculation if LLM fails
+    print("Failed to extract valid JSON from LLM response for difficulty prediction")
+    from utils.difficulty import calculate_difficulty_score, get_difficulty_level
+    score = calculate_difficulty_score(distance, elevation_gain)
+    return {
+        "difficulty_score": score,
+        "difficulty_level": get_difficulty_level(score)
+    }
 
 
 # Tool 2 - RAG for semantic search over notes and descriptions
@@ -241,15 +386,25 @@ def get_llm_with_tools():
 
 _SYSTEM_CONTENT = (
     "You are TrailBuddy, a friendly and encouraging hiking companion.\n\n"
-    "You have two tools:\n"
-    "- query_hikes_db: use for numbers, counts, sums, rankings, date filters, and difficulty analysis.\n"
+    "IMPORTANT: You have tools to access the user's personal hiking history, but you should ONLY use them "
+    "when the user's question is specifically about THEIR past hikes or personal data.\n\n"
+    "## When to USE tools:\n"
+    "- Questions about specific hikes they've done (\"my hike to Horgen\", \"hikes I did in May\")\n"
+    "- Statistics about their hiking history (\"how many hikes\", \"total distance\", \"hardest hike\")\n"
+    "- Personal notes or experiences (\"which hikes did I mention rain\", \"where did I feel tired\")\n"
+    "- Comparisons within their data (\"my longest vs shortest hike\")\n\n"
+    "## When to NOT use tools (answer directly):\n"
+    "- General hiking advice (\"what should I bring on a hike\", \"how to prepare for hiking\")\n"
+    "- Hypothetical questions (\"what would be a good beginner hike\", \"is 10km too much\")\n"
+    "- Hiking tips and best practices (\"how to prevent blisters\", \"best time to hike\")\n"
+    "- Questions about trails they haven't done yet\n"
+    "- General conversation (\"hello\", \"what can you do\", \"tell me about hiking\")\n\n"
+    "## Available Tools:\n"
+    "- query_hikes_db: SQL queries for statistics, counts, sums, filtering by date/distance/elevation\n"
     f"  {_SQL_SCHEMA}\n"
-    "- search_hike_notes: use for semantic/free-text search over hike notes and feelings.\n\n"
-    "Hikes now have a difficulty_score and difficulty_level.\n"
-    "Levels: Easy, Moderate, Challenging, Hard, Expert.\n"
-    "Use one or both tools as needed, then give a clear, friendly answer with "
-    "specific numbers, dates, and difficulty information when available. "
-    "If you cannot find the information, say so honestly."
+    "- search_hike_notes: Semantic search over their hike notes and descriptions\n\n"
+    "Hikes have difficulty_score (1-50) and difficulty_level (Easy, Moderate, Challenging, Hard, Expert).\n"
+    "When you do use tools, provide specific numbers and dates. Otherwise, give friendly, helpful advice directly."
 )
 _SYSTEM_PROMPT = SystemMessage(content=_SYSTEM_CONTENT)
 
