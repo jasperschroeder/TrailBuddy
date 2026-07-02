@@ -159,7 +159,4 @@ print()
 print("=" * 50)
 print(f"Results: {passed} passed, {failed} failed")
 
-if failed == 0:
-    print("🎉 All security tests passed!")
-else:
-    print("⚠️  Some tests failed")
+assert failed == 0, f"{failed} security checks failed"
