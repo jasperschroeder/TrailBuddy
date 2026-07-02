@@ -179,7 +179,7 @@ def sync_vectorstore():
     
     # Get existing IDs from Chroma
     try:
-        existing = vectorstore.get()
+        existing = vectorstore.get(include=[])  # fetch ids only
         indexed_ids = set(existing['ids'])
     except Exception:
         indexed_ids = set()
