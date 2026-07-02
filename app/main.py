@@ -260,7 +260,8 @@ elif page == "Upload Hike":
                 st.balloons()
                 st.session_state.reset_upload_form = True
                 st.session_state.upload_form_version = upload_form_version + 1
-                st.rerun()
+                # Don't rerun immediately - let balloons animate first
+                # Form will reset on next interaction
 
 elif page == "History":
     st.title("Hike History")

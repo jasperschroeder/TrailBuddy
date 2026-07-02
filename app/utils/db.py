@@ -198,82 +198,71 @@ def move_ranking_position(hike_id: int, direction: str):
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT hike_id, rank_position FROM ranking WHERE hike_id = ?", (hike_id,))
-    current_row = cursor.fetchone()
-    if not current_row:
-        conn.close()
-        return None
+        current_row = cursor.fetchone()
+        if not current_row:
+            return None
 
-    current_position = current_row["rank_position"]
-    cursor.execute("SELECT COALESCE(MAX(rank_position), 0) AS max_position FROM ranking")
-    max_position = cursor.fetchone()["max_position"] or 0
+        current_position = current_row["rank_position"]
+        cursor.execute("SELECT COALESCE(MAX(rank_position), 0) AS max_position FROM ranking")
+        max_position = cursor.fetchone()["max_position"] or 0
 
-    if direction == "up" and current_position <= 1:
-        conn.close()
-        return current_position
-    if direction == "down" and current_position >= max_position:
-        conn.close()
-        return current_position
+        if direction == "up" and current_position <= 1:
+            return current_position
+        if direction == "down" and current_position >= max_position:
+            return current_position
 
-    target_position = current_position - 1 if direction == "up" else current_position + 1
+        target_position = current_position - 1 if direction == "up" else current_position + 1
 
-    temp_position = -current_position
-    cursor.execute("UPDATE ranking SET rank_position = ? WHERE hike_id = ?", (temp_position, hike_id))
-    cursor.execute(
-        "UPDATE ranking SET rank_position = ? WHERE rank_position = ?",
-        (current_position, target_position)
-    )
-    cursor.execute(
-        "UPDATE ranking SET rank_position = ? WHERE hike_id = ?",
-        (target_position, hike_id)
-    )
-    conn.commit()
-    conn.close()
-    return target_position
+        temp_position = -current_position
+        cursor.execute("UPDATE ranking SET rank_position = ? WHERE hike_id = ?", (temp_position, hike_id))
+        cursor.execute(
+            "UPDATE ranking SET rank_position = ? WHERE rank_position = ?",
+            (current_position, target_position)
+        )
+        cursor.execute(
+            "UPDATE ranking SET rank_position = ? WHERE hike_id = ?",
+            (target_position, hike_id)
+        )
+        return target_position
 
 
 def delete_hike(hike_id: int):
     """Delete a hike by ID."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM ranking WHERE hike_id = ?", (hike_id,))
-    cursor.execute("DELETE FROM hikes WHERE id = ?", (hike_id,))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ranking WHERE hike_id = ?", (hike_id,))
+        cursor.execute("DELETE FROM hikes WHERE id = ?", (hike_id,))
 
 
 def update_hike(hike_id: int, data: dict):
     """Update editable fields (title, hike_date, notes) for a hike."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE hikes SET title = ?, hike_date = ?, notes = ? WHERE id = ?",
-        (data.get("title"), data.get("hike_date"), data.get("notes"), hike_id)
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE hikes SET title = ?, hike_date = ?, notes = ? WHERE id = ?",
+            (data.get("title"), data.get("hike_date"), data.get("notes"), hike_id)
+        )
 
 
 def get_hike_by_filename(filename: str):
     """Return a hike matching the given GPX filename, or None."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM hikes WHERE gpx_filename = ? LIMIT 1", (filename,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM hikes WHERE gpx_filename = ? LIMIT 1", (filename,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_hike_by_title_and_date(title: str, hike_date: str):
     """Return a hike matching the given title and date, or None."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM hikes WHERE title = ? AND hike_date = ? LIMIT 1",
-        (title, hike_date)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM hikes WHERE title = ? AND hike_date = ? LIMIT 1",
+            (title, hike_date)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 # Initialize on import
