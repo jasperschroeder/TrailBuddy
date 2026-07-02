@@ -128,8 +128,12 @@ def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:
             elif expected_type == str:
                 validated[field] = str(value)
             elif expected_type == bool:
-                validated[field] = bool(value)
-            else:
+                if isinstance(value, bool):
+                    validated[field] = value
+                elif isinstance(value, str):
+                    validated[field] = value.strip().lower() in {"true", "1", "yes", "y", "on"}
+                else:
+                    validated[field] = bool(value)
                 validated[field] = value
         except (ValueError, TypeError):
             validated[field] = default_value
