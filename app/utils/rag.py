@@ -262,18 +262,12 @@ def _validate_sql_query(sql: str) -> tuple[bool, str]:
     
     # Ensure only querying the 'hikes' table or using it in joins
     # This prevents querying system tables like sqlite_master
-    if 'FROM' in sql_upper:
-        # Extract table references after FROM
-        from_pattern = re.compile(
-            r'\bFROM\s+([\w,\s]+?)(?:\s+WHERE|\s+GROUP|\s+ORDER|\s+LIMIT|\s+JOIN|$)',
-            re.IGNORECASE
-        )
-        from_match = from_pattern.search(sql_no_comments)
-        if from_match:
-            tables = [t.strip().split()[0] for t in from_match.group(1).split(',')]
-            for table in tables:
-                if table.lower() not in ['hikes', 'ranking']:
-                    return False, f"Error: access to table '{table}' not allowed"
+    # Ensure only querying the 'hikes' table (or 'ranking') in any FROM/JOIN clause.
+    # This prevents querying system tables like sqlite_master via JOINs or nested queries.
+    table_refs = re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w]*)", sql_no_comments, flags=re.IGNORECASE)
+    for table in table_refs:
+        if table.lower() not in ["hikes", "ranking"]:
+            return False, f"Error: access to table '{table}' not allowed"
     
     return True, ""
 
