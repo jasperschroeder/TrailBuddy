@@ -18,10 +18,34 @@ st.set_page_config(
 # Initialize database
 init_db()
 
+# Initialize Ollama service
+if "ollama_status" not in st.session_state:
+    from utils.rag import start_ollama_service
+    is_running, status_msg = start_ollama_service()
+    st.session_state.ollama_status = {
+        "running": is_running,
+        "message": status_msg
+    }
+
 
 # Sidebar
 st.sidebar.title("TrailBuddy")
 st.sidebar.markdown("Your personal hiking companion + AI buddy.")
+
+# Ollama Status Indicator
+if st.session_state.ollama_status["running"]:
+    st.sidebar.success("🟢 AI Available")
+else:
+    st.sidebar.error("🔴 AI Unavailable")
+    st.sidebar.caption(st.session_state.ollama_status["message"])
+    if st.sidebar.button("🔄 Retry Starting Ollama"):
+        from utils.rag import start_ollama_service
+        is_running, status_msg = start_ollama_service()
+        st.session_state.ollama_status = {
+            "running": is_running,
+            "message": status_msg
+        }
+        st.rerun()
 
 # Navigation
 page = st.sidebar.selectbox(
@@ -229,10 +253,27 @@ elif page == "Upload Hike":
                 heuristic_level = get_difficulty_level(heuristic_score)
 
                 # Try to refine with LLM/RAG if possible
-                with st.spinner("Predicting hike difficulty with AI..."):
-                    llm_prediction = predict_hike_difficulty(distance, elevation_gain, notes)
-                    difficulty_score = llm_prediction.get("difficulty_score", heuristic_score)
-                    difficulty_level = llm_prediction.get("difficulty_level", heuristic_level)
+                ai_available = st.session_state.ollama_status["running"]
+                
+                if ai_available:
+                    with st.spinner("Predicting hike difficulty with AI..."):
+                        llm_prediction = predict_hike_difficulty(distance, elevation_gain, notes)
+                        difficulty_score = llm_prediction.get("difficulty_score", heuristic_score)
+                        difficulty_level = llm_prediction.get("difficulty_level", heuristic_level)
+                        used_ai = llm_prediction.get("used_ai", False)
+                        
+                        if not used_ai:
+                            st.warning(
+                                "⚠️ AI prediction unavailable. Using heuristic calculation "
+                                "based on distance and elevation."
+                            )
+                else:
+                    difficulty_score = heuristic_score
+                    difficulty_level = heuristic_level
+                    st.warning(
+                        "⚠️ AI is unavailable. Using heuristic difficulty calculation "
+                        "based on distance and elevation."
+                    )
 
                 # Prepare data for DB
                 save_data = {
@@ -502,6 +543,19 @@ elif page == "Ranking":
                     st.rerun()
 
 elif page == "Chat with TrailBuddy":
+    # Check if Ollama is available
+    if not st.session_state.ollama_status["running"]:
+        st.title("💬 Chat with TrailBuddy")
+        st.error("🔴 AI Chat is currently unavailable.")
+        st.info(
+            f"**Status:** {st.session_state.ollama_status['message']}\n\n"
+            "The chat feature requires Ollama to be running. Please:\n"
+            "1. Make sure Ollama is installed (download from https://ollama.ai/download)\n"
+            "2. Try clicking the 'Retry Starting Ollama' button in the sidebar\n"
+            "3. Or manually start Ollama and refresh this page"
+        )
+        st.stop()
+    
     from utils.rag import ask_trailbuddy, sync_vectorstore
 
     title_col, action_col = st.columns([6, 2], vertical_alignment="top")

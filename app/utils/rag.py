@@ -1,6 +1,10 @@
 import re
 import json
 import sqlite3
+import subprocess
+import time
+import urllib.request
+import urllib.error
 
 from langchain_ollama import ChatOllama
 from langchain_community.vectorstores import Chroma
@@ -22,6 +26,62 @@ _embeddings = None
 _llm = None
 
 
+# Ollama service management
+
+def check_ollama_health() -> tuple[bool, str]:
+    """Check if Ollama is running and responding.
+    
+    Returns:
+        (is_healthy, status_message)
+    """
+    try:
+        req = urllib.request.Request('http://localhost:11434/api/tags', method='GET')
+        with urllib.request.urlopen(req, timeout=2) as response:
+            if response.status == 200:
+                return True, "Ollama is running"
+            return False, f"Ollama returned status {response.status}"
+    except urllib.error.URLError:
+        return False, "Ollama is not responding"
+    except Exception as e:
+        return False, f"Ollama health check failed: {str(e)}"
+
+
+def start_ollama_service() -> tuple[bool, str]:
+    """Check if Ollama is running, and start it if not.
+    
+    Returns:
+        (is_running, status_message)
+    """
+    # First check if already running
+    is_healthy, _ = check_ollama_health()
+    if is_healthy:
+        return True, "Ollama is already running"
+    
+    # Try to start Ollama
+    try:
+        # Start ollama serve in background (detached process)
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+        )
+        
+        # Wait up to 10 seconds for Ollama to start
+        for _ in range(20):
+            time.sleep(0.5)
+            is_healthy, _ = check_ollama_health()
+            if is_healthy:
+                return True, "Ollama started successfully"
+        
+        return False, "Ollama started but not responding yet (may need more time)"
+    
+    except FileNotFoundError:
+        return False, "Ollama is not installed. Download from https://ollama.ai/download"
+    except Exception as e:
+        return False, f"Failed to start Ollama: {str(e)}"
+
+
 def get_embeddings():
     """Lazy-load embeddings model on first use."""
     global _embeddings
@@ -35,8 +95,8 @@ def get_llm():
     global _llm
     if _llm is None:
         _llm = ChatOllama(
-            model="qwen2.5:7b",
-            temperature=0.7,
+            model="mistral-nemo:12b",
+            temperature=0.5,
             num_ctx=4096,
         )
     return _llm
@@ -44,26 +104,26 @@ def get_llm():
 
 def _extract_json_from_llm_response(content: str, expected_schema: dict = None) -> dict | None:
     """Robustly extract and validate JSON from LLM response.
-    
+
     Args:
         content: Raw LLM response text
         expected_schema: Optional dict mapping field names to (type, default_value) tuples
-        
+
     Returns:
         Parsed and validated JSON dict, or None if extraction fails
     """
     if not content:
         return None
-    
+
     content = content.strip()
-    
+
     # Strategy 1: Try to extract JSON from markdown code blocks
     json_patterns = [
         r'```json\s*\n(.+?)\n```',  # ```json ... ```
         r'```\s*\n(.+?)\n```',       # ``` ... ```
         r'`([{\[].*?[}\]])`',         # `{...}` or `[...]`
     ]
-    
+
     for pattern in json_patterns:
         matches = re.findall(pattern, content, re.DOTALL)
         for match in matches:
@@ -73,7 +133,7 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
                     return _validate_json_schema(result, expected_schema)
             except json.JSONDecodeError:
                 continue
-    
+
     # Strategy 2: Find first valid JSON object or array in the text
     # Look for { ... } or [ ... ] patterns
     json_obj_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
@@ -239,7 +299,13 @@ _SQL_SCHEMA = (
     "Columns: id INTEGER, hike_date TEXT (YYYY-MM-DD), title TEXT, "
     "distance REAL (km), elevation_gain REAL (meters), "
     "duration_minutes INTEGER, notes TEXT, "
-    "difficulty_score REAL, difficulty_level TEXT, created_at TEXT"
+    "difficulty_score REAL, difficulty_level TEXT, created_at TEXT\n\n"
+    "IMPORTANT: For date queries, use SQLite date functions:\n"
+    "  - Current date: date('now')\n"
+    "  - This year: WHERE strftime('%Y', hike_date) = strftime('%Y', 'now')\n"
+    "  - This month: WHERE strftime('%Y-%m', hike_date) = strftime('%Y-%m', 'now')\n"
+    "  - Last 7 days: WHERE hike_date >= date('now', '-7 days')\n"
+    "  - Specific month: WHERE strftime('%Y-%m', hike_date) = '2026-05'"
 )
 
 
@@ -291,7 +357,7 @@ def query_hikes_db(sql: str) -> str:
     is_valid, error_msg = _validate_sql_query(sql)
     if not is_valid:
         return error_msg
-    
+
     try:
         with sqlite3.connect(DB_PATH) as conn:
             # Enable read-only mode for extra safety
@@ -310,6 +376,10 @@ def query_hikes_db(sql: str) -> str:
 def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str = "") -> dict:
     """
     Predict hike difficulty using the LLM and RAG guidelines.
+    Falls back to heuristic calculation if LLM is unavailable.
+    
+    Returns:
+        dict with keys: difficulty_score (float), difficulty_level (str), used_ai (bool)
     """
     guidelines_path = Path(__file__).parent / "difficulty_guidelines.md"
     guidelines = ""
@@ -332,27 +402,34 @@ def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str =
     Return ONLY a JSON object with keys: "difficulty_score" (float) and "difficulty_level" (string).
     """
 
-    response = get_llm().invoke([HumanMessage(content=prompt)])
-    
-    # Use robust JSON extraction
-    result = _extract_json_from_llm_response(response.content, {
-        "difficulty_score": (float, None),
-        "difficulty_level": (str, None)
-    })
-    
-    if result:
-        return {
-            "difficulty_score": result.get("difficulty_score", 0.0),
-            "difficulty_level": result.get("difficulty_level", "Unknown")
-        }
-    
-    # Fallback to local calculation if LLM fails
-    print("Failed to extract valid JSON from LLM response for difficulty prediction")
+    try:
+        response = get_llm().invoke([HumanMessage(content=prompt)])
+
+        # Use robust JSON extraction
+        result = _extract_json_from_llm_response(response.content, {
+            "difficulty_score": (float, None),
+            "difficulty_level": (str, None)
+        })
+
+        if result:
+            return {
+                "difficulty_score": result.get("difficulty_score", 0.0),
+                "difficulty_level": result.get("difficulty_level", "Unknown"),
+                "used_ai": True
+            }
+
+    except Exception as e:
+        print(f"LLM prediction failed: {str(e)}")
+        # Fall through to heuristic calculation
+
+    # Fallback to local calculation if LLM fails or is unavailable
+    print("Using heuristic difficulty calculation (LLM unavailable or failed)")
     from utils.difficulty import calculate_difficulty_score, get_difficulty_level
     score = calculate_difficulty_score(distance, elevation_gain)
     return {
         "difficulty_score": score,
-        "difficulty_level": get_difficulty_level(score)
+        "difficulty_level": get_difficulty_level(score),
+        "used_ai": False
     }
 
 
@@ -401,6 +478,9 @@ _SYSTEM_CONTENT = (
     "- query_hikes_db: SQL queries for statistics, counts, sums, filtering by date/distance/elevation\n"
     f"  {_SQL_SCHEMA}\n"
     "- search_hike_notes: Semantic search over their hike notes and descriptions\n\n"
+    "CRITICAL: When users ask about 'this year', 'this month', 'today', etc., ALWAYS use SQLite date functions like "
+    "date('now') and strftime(). NEVER use a hardcoded year from your training data. "
+    "The schema above shows examples.\n\n"
     "Hikes have difficulty_score (1-50) and difficulty_level (Easy, Moderate, Challenging, Hard, Expert).\n"
     "When you do use tools, provide specific numbers and dates. Otherwise, give friendly, helpful advice directly."
 )
