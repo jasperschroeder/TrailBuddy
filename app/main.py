@@ -9,6 +9,9 @@ from utils.parse_gpx import parse_gpx_file
 from utils.parse_csv import parse_csv_file
 from utils.weather import fetch_weather_cached
 
+# Constants
+HIKES_DATA_DIR = "data/hikes"
+
 # Page configuration
 st.set_page_config(
     page_title="TrailBuddy",
@@ -293,9 +296,14 @@ elif page == "Upload Hike":
 
                 # Save raw files (optional but can be nice)
                 if gpx_file:
-                    gpx_path = Path("data/hikes") / f"hike_{hike_id}_{gpx_file.name}"
+                    gpx_path = Path(HIKES_DATA_DIR) / f"hike_{hike_id}_{gpx_file.name}"
                     with open(gpx_path, "wb") as f:
                         f.write(gpx_file.getbuffer())
+
+                if csv_file:
+                    csv_path = Path(HIKES_DATA_DIR) / f"hike_{hike_id}_{csv_file.name}"
+                    with open(csv_path, "wb") as f:
+                        f.write(csv_file.getbuffer())
 
                 st.success(f"Hike saved successfully with ID {hike_id}!")
                 st.balloons()
@@ -393,8 +401,8 @@ elif page == "History":
                 st.write(f"**Notes:** {hike.get('notes', '')}")
                 # Try to find the GPX file for this hike in known locations
                 candidates = [
-                    f"data/hikes/hike_{hike_id}_*.gpx",
-                    f"app/data/hikes/hike_{hike_id}_*.gpx",
+                    f"{HIKES_DATA_DIR}/hike_{hike_id}_*.gpx",
+                    f"app/{HIKES_DATA_DIR}/hike_{hike_id}_*.gpx",
                 ]
                 gpx_files = []
                 for pattern in candidates:
@@ -402,7 +410,7 @@ elif page == "History":
 
                 # Fallback: if DB stored a filename, try to find it directly
                 if not gpx_files and hike.get("gpx_filename"):
-                    for base in ["data/hikes", "app/data/hikes"]:
+                    for base in [HIKES_DATA_DIR, f"app/{HIKES_DATA_DIR}"]:
                         candidate_path = f"{base}/{hike.get('gpx_filename')}"
                         if Path(candidate_path).exists():
                             gpx_files.append(candidate_path)
@@ -489,7 +497,7 @@ elif page == "History":
                     if st.button("Confirm Delete", key=f"confirm_del_{hike_id}", type="primary"):
                         delete_hike(hike_id)
                         # Remove GPX file from disk if it exists
-                        for gpx_file_path in glob.glob(f"data/hikes/hike_{hike_id}_*"):
+                        for gpx_file_path in glob.glob(f"{HIKES_DATA_DIR}/hike_{hike_id}_*"):
                             Path(gpx_file_path).unlink(missing_ok=True)
                         st.session_state.confirm_delete_id = None
                         st.rerun()
