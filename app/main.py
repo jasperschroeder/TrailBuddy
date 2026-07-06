@@ -9,6 +9,9 @@ from utils.parse_gpx import parse_gpx_file
 from utils.parse_csv import parse_csv_file
 from utils.weather import fetch_weather_cached
 
+# Constants
+HIKES_DATA_DIR = "data/hikes"
+
 # Page configuration
 st.set_page_config(
     page_title="TrailBuddy",
@@ -18,10 +21,34 @@ st.set_page_config(
 # Initialize database
 init_db()
 
+# Initialize Ollama service
+if "ollama_status" not in st.session_state:
+    from utils.rag import start_ollama_service
+    is_running, status_msg = start_ollama_service()
+    st.session_state.ollama_status = {
+        "running": is_running,
+        "message": status_msg
+    }
+
 
 # Sidebar
 st.sidebar.title("TrailBuddy")
 st.sidebar.markdown("Your personal hiking companion + AI buddy.")
+
+# Ollama Status Indicator
+if st.session_state.ollama_status["running"]:
+    st.sidebar.success("🟢 AI Available")
+else:
+    st.sidebar.error("🔴 AI Unavailable")
+    st.sidebar.caption(st.session_state.ollama_status["message"])
+    if st.sidebar.button("🔄 Retry Starting Ollama"):
+        from utils.rag import start_ollama_service
+        is_running, status_msg = start_ollama_service()
+        st.session_state.ollama_status = {
+            "running": is_running,
+            "message": status_msg
+        }
+        st.rerun()
 
 # Navigation
 page = st.sidebar.selectbox(
@@ -229,10 +256,27 @@ elif page == "Upload Hike":
                 heuristic_level = get_difficulty_level(heuristic_score)
 
                 # Try to refine with LLM/RAG if possible
-                with st.spinner("Predicting hike difficulty with AI..."):
-                    llm_prediction = predict_hike_difficulty(distance, elevation_gain, notes)
-                    difficulty_score = llm_prediction.get("difficulty_score", heuristic_score)
-                    difficulty_level = llm_prediction.get("difficulty_level", heuristic_level)
+                ai_available = st.session_state.ollama_status["running"]
+                
+                if ai_available:
+                    with st.spinner("Predicting hike difficulty with AI..."):
+                        llm_prediction = predict_hike_difficulty(distance, elevation_gain, notes)
+                        difficulty_score = llm_prediction.get("difficulty_score", heuristic_score)
+                        difficulty_level = llm_prediction.get("difficulty_level", heuristic_level)
+                        used_ai = llm_prediction.get("used_ai", False)
+                        
+                        if not used_ai:
+                            st.warning(
+                                "⚠️ AI prediction unavailable. Using heuristic calculation "
+                                "based on distance and elevation."
+                            )
+                else:
+                    difficulty_score = heuristic_score
+                    difficulty_level = heuristic_level
+                    st.warning(
+                        "⚠️ AI is unavailable. Using heuristic difficulty calculation "
+                        "based on distance and elevation."
+                    )
 
                 # Prepare data for DB
                 save_data = {
@@ -252,9 +296,14 @@ elif page == "Upload Hike":
 
                 # Save raw files (optional but can be nice)
                 if gpx_file:
-                    gpx_path = Path("data/hikes") / f"hike_{hike_id}_{gpx_file.name}"
+                    gpx_path = Path(HIKES_DATA_DIR) / f"hike_{hike_id}_{gpx_file.name}"
                     with open(gpx_path, "wb") as f:
                         f.write(gpx_file.getbuffer())
+
+                if csv_file:
+                    csv_path = Path(HIKES_DATA_DIR) / f"hike_{hike_id}_{csv_file.name}"
+                    with open(csv_path, "wb") as f:
+                        f.write(csv_file.getbuffer())
 
                 st.success(f"Hike saved successfully with ID {hike_id}!")
                 st.balloons()
@@ -352,8 +401,8 @@ elif page == "History":
                 st.write(f"**Notes:** {hike.get('notes', '')}")
                 # Try to find the GPX file for this hike in known locations
                 candidates = [
-                    f"data/hikes/hike_{hike_id}_*.gpx",
-                    f"app/data/hikes/hike_{hike_id}_*.gpx",
+                    f"{HIKES_DATA_DIR}/hike_{hike_id}_*.gpx",
+                    f"app/{HIKES_DATA_DIR}/hike_{hike_id}_*.gpx",
                 ]
                 gpx_files = []
                 for pattern in candidates:
@@ -361,7 +410,7 @@ elif page == "History":
 
                 # Fallback: if DB stored a filename, try to find it directly
                 if not gpx_files and hike.get("gpx_filename"):
-                    for base in ["data/hikes", "app/data/hikes"]:
+                    for base in [HIKES_DATA_DIR, f"app/{HIKES_DATA_DIR}"]:
                         candidate_path = f"{base}/{hike.get('gpx_filename')}"
                         if Path(candidate_path).exists():
                             gpx_files.append(candidate_path)
@@ -448,7 +497,7 @@ elif page == "History":
                     if st.button("Confirm Delete", key=f"confirm_del_{hike_id}", type="primary"):
                         delete_hike(hike_id)
                         # Remove GPX file from disk if it exists
-                        for gpx_file_path in glob.glob(f"data/hikes/hike_{hike_id}_*"):
+                        for gpx_file_path in glob.glob(f"{HIKES_DATA_DIR}/hike_{hike_id}_*"):
                             Path(gpx_file_path).unlink(missing_ok=True)
                         st.session_state.confirm_delete_id = None
                         st.rerun()
@@ -502,6 +551,19 @@ elif page == "Ranking":
                     st.rerun()
 
 elif page == "Chat with TrailBuddy":
+    # Check if Ollama is available
+    if not st.session_state.ollama_status["running"]:
+        st.title("💬 Chat with TrailBuddy")
+        st.error("🔴 AI Chat is currently unavailable.")
+        st.info(
+            f"**Status:** {st.session_state.ollama_status['message']}\n\n"
+            "The chat feature requires Ollama to be running. Please:\n"
+            "1. Make sure Ollama is installed (download from https://ollama.ai/download)\n"
+            "2. Try clicking the 'Retry Starting Ollama' button in the sidebar\n"
+            "3. Or manually start Ollama and refresh this page"
+        )
+        st.stop()
+    
     from utils.rag import ask_trailbuddy, sync_vectorstore
 
     title_col, action_col = st.columns([6, 2], vertical_alignment="top")
