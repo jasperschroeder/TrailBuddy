@@ -107,7 +107,7 @@ def get_llm():
         _llm = ChatOllama(
             model=OLLAMA_MODEL,
             base_url=OLLAMA_HOST,
-            temperature=0.5,
+            temperature=0,
             num_ctx=4096,
         )
     return _llm
@@ -486,14 +486,12 @@ _SYSTEM_CONTENT = (
     "- Questions about trails they haven't done yet\n"
     "- General conversation (\"hello\", \"what can you do\", \"tell me about hiking\")\n\n"
     "## Available Tools:\n"
-    "- query_hikes_db: SQL queries for statistics, counts, sums, filtering by date/distance/elevation\n"
-    f"  {_SQL_SCHEMA}\n"
-    "- search_hike_notes: Semantic search over their hike notes and descriptions\n\n"
-    "CRITICAL: When users ask about 'this year', 'this month', 'today', etc., ALWAYS use SQLite date functions like "
-    "date('now') and strftime(). NEVER use a hardcoded year from your training data. "
-    "The schema above shows examples.\n\n"
+    "- query_hikes_db(sql: str): Run a SQL SELECT query for ANY statistics. Use this for counts, sums, averages, or filtering. MUST use correctly formatted SQL.\n"
+    "- search_hike_notes(query: str): Semantic search for 'feelings' or descriptions in notes.\n\n"
+    "CRITICAL: If you need information from the user's hiking history, you MUST call one of the tools above. "
+    "Do not just explain how to do it; actually trigger the tool call.\n\n"
     "Hikes have difficulty_score (1-50) and difficulty_level (Easy, Moderate, Challenging, Hard, Expert).\n"
-    "When you do use tools, provide specific numbers and dates. Otherwise, give friendly, helpful advice directly."
+    "When you use tools, provide specific numbers and dates. If no tools are needed, give friendly advice directly."
 )
 _SYSTEM_PROMPT = SystemMessage(content=_SYSTEM_CONTENT)
 
@@ -506,6 +504,22 @@ def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
 
     for _ in range(10):  # safety cap on iterations
         response = llm_with_tools.invoke(messages)
+        
+        # Fallback: If no tool_calls but content looks like a tool call (common with small models)
+        if not response.tool_calls and "query_hikes_db" in response.content:
+            # Try to grab SQL from the response content
+            sql_match = re.search(r"SELECT.*?;?", response.content, re.IGNORECASE | re.DOTALL)
+            if sql_match:
+                sql = sql_match.group(0).strip("`").strip()
+                response.tool_calls = [{"name": "query_hikes_db", "args": {"sql": sql}, "id": "manual_sql"}]
+        
+        elif not response.tool_calls and "search_hike_notes" in response.content:
+            # Try to grab query from search_hike_notes("...")
+            search_match = re.search(r"search_hike_notes\(['\"](.+?)['\"]\)", response.content)
+            if search_match:
+                query = search_match.group(1)
+                response.tool_calls = [{"name": "search_hike_notes", "args": {"query": query}, "id": "manual_search"}]
+
         messages.append(response)
 
         if not response.tool_calls:
