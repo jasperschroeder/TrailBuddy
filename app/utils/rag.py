@@ -6,6 +6,8 @@ import time
 import urllib.request
 import urllib.error
 
+import os
+
 from langchain_ollama import ChatOllama
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -15,6 +17,11 @@ from utils.db import get_all_hikes, DB_PATH
 from pathlib import Path
 
 # Configuration
+# Environment variables for Docker/Environment awareness
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral-nemo:12b")
+SKIP_OLLAMA_START = os.getenv("SKIP_OLLAMA_START", "false").lower() == "true"
+
 # Path relative to project root
 ROOT_DIR = Path(__file__).parents[2]
 DATA_DIR = ROOT_DIR / "data"
@@ -30,12 +37,12 @@ _llm = None
 
 def check_ollama_health() -> tuple[bool, str]:
     """Check if Ollama is running and responding.
-    
+
     Returns:
         (is_healthy, status_message)
     """
     try:
-        req = urllib.request.Request('http://localhost:11434/api/tags', method='GET')
+        req = urllib.request.Request(f'{OLLAMA_HOST}/api/tags', method='GET')
         with urllib.request.urlopen(req, timeout=2) as response:
             if response.status == 200:
                 return True, "Ollama is running"
@@ -48,7 +55,7 @@ def check_ollama_health() -> tuple[bool, str]:
 
 def start_ollama_service() -> tuple[bool, str]:
     """Check if Ollama is running, and start it if not.
-    
+
     Returns:
         (is_running, status_message)
     """
@@ -56,7 +63,10 @@ def start_ollama_service() -> tuple[bool, str]:
     is_healthy, _ = check_ollama_health()
     if is_healthy:
         return True, "Ollama is already running"
-    
+
+    if SKIP_OLLAMA_START:
+        return False, f"Ollama is not running at {OLLAMA_HOST} and auto-start is disabled."
+
     # Try to start Ollama
     try:
         # Start ollama serve in background (detached process)
@@ -66,16 +76,16 @@ def start_ollama_service() -> tuple[bool, str]:
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
         )
-        
+
         # Wait up to 10 seconds for Ollama to start
         for _ in range(20):
             time.sleep(0.5)
             is_healthy, _ = check_ollama_health()
             if is_healthy:
                 return True, "Ollama started successfully"
-        
+
         return False, "Ollama started but not responding yet (may need more time)"
-    
+
     except FileNotFoundError:
         return False, "Ollama is not installed. Download from https://ollama.ai/download"
     except Exception as e:
@@ -95,14 +105,15 @@ def get_llm():
     global _llm
     if _llm is None:
         _llm = ChatOllama(
-            model="mistral-nemo:12b",
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_HOST,
             temperature=0.5,
             num_ctx=4096,
         )
     return _llm
 
 
-def _extract_json_from_llm_response(content: str, expected_schema: dict = None) -> dict | None:
+def _extract_json_from_llm_response(content: str, expected_schema: dict = None) -> dict | None:  # noqa
     """Robustly extract and validate JSON from LLM response.
 
     Args:
@@ -138,7 +149,7 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
     # Look for { ... } or [ ... ] patterns
     json_obj_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
     matches = re.findall(json_obj_pattern, content)
-    
+
     for match in matches:
         try:
             result = json.loads(match)
@@ -146,7 +157,7 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
                 return _validate_json_schema(result, expected_schema)
         except json.JSONDecodeError:
             continue
-    
+
     # Strategy 3: Try parsing the entire content as JSON
     try:
         result = json.loads(content)
@@ -154,31 +165,31 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
             return _validate_json_schema(result, expected_schema)
     except json.JSONDecodeError:
         pass
-    
+
     return None
 
 
-def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:
+def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:  # noqa
     """Validate and coerce JSON data to expected schema.
-    
+
     Args:
         data: Parsed JSON dict
         expected_schema: Dict mapping field names to (type, default_value) tuples
-        
+
     Returns:
         Validated dict with coerced types
     """
     if not expected_schema:
         return data
-    
+
     validated = {}
     for field, (expected_type, default_value) in expected_schema.items():
         value = data.get(field, default_value)
-        
+
         if value is None:
             validated[field] = default_value
             continue
-        
+
         # Type coercion with error handling
         try:
             if expected_type == float:
@@ -197,7 +208,7 @@ def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:
                 validated[field] = value
         except (ValueError, TypeError):
             validated[field] = default_value
-    
+
     return validated
 
 
@@ -240,7 +251,7 @@ def sync_vectorstore():
         return "No hikes in the database to index."
 
     vectorstore = _open_vectorstore()
-    
+
     # Get existing IDs from Chroma
     try:
         existing = vectorstore.get(include=[])  # fetch ids only
@@ -314,31 +325,31 @@ def _validate_sql_query(sql: str) -> tuple[bool, str]:
     # Remove comments to prevent hidden commands
     sql_no_comments = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
     sql_no_comments = re.sub(r'/\*.*?\*/', '', sql_no_comments, flags=re.DOTALL)
-    
+
     # Check for multiple statements (semicolon-separated)
     if ';' in sql_no_comments.rstrip(';'):
         return False, "Error: multiple statements not allowed"
-    
+
     # Check it starts with SELECT
     if not _ALLOWED_SQL.match(sql_no_comments.strip()):
         return False, "Error: only SELECT queries are permitted"
-    
+
     # Check for dangerous keywords
     sql_upper = sql_no_comments.upper()
     for keyword in _DANGEROUS_SQL_KEYWORDS:
         # Use word boundaries to avoid false positives in column names
         if re.search(rf'\b{keyword}\b', sql_upper):
             return False, f"Error: dangerous keyword '{keyword}' not allowed"
-    
+
     # Ensure only querying the 'hikes' table or using it in joins
     # This prevents querying system tables like sqlite_master
     # Ensure only querying the 'hikes' table (or 'ranking') in any FROM/JOIN clause.
     # This prevents querying system tables like sqlite_master via JOINs or nested queries.
-    table_refs = re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w]*)", sql_no_comments, flags=re.IGNORECASE)
+    table_refs = re.findall(r"\b(?:FROM|JOIN)\s+([a-z_][\w]*)", sql_no_comments, flags=re.IGNORECASE)
     for table in table_refs:
         if table.lower() not in ["hikes", "ranking"]:
             return False, f"Error: access to table '{table}' not allowed"
-    
+
     return True, ""
 
 
@@ -377,7 +388,7 @@ def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str =
     """
     Predict hike difficulty using the LLM and RAG guidelines.
     Falls back to heuristic calculation if LLM is unavailable.
-    
+
     Returns:
         dict with keys: difficulty_score (float), difficulty_level (str), used_ai (bool)
     """

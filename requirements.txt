@@ -15,4 +15,3 @@ pydantic==2.13.2
 python-dotenv==1.2.2
 sqlalchemy==2.0.49
 streamlit==1.56.0
-torchvision==0.26.0

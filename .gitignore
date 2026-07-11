@@ -2,6 +2,7 @@
 # Keep all personal/local hike data and generated indexes out of version control.
 data/
 app/data/
+ollama_models/
 **/chroma_db/
 *.db
 *.sqlite
