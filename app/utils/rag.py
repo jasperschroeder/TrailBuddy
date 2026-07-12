@@ -6,6 +6,8 @@ import time
 import urllib.request
 import urllib.error
 
+import os
+
 from langchain_ollama import ChatOllama
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -15,6 +17,11 @@ from utils.db import get_all_hikes, DB_PATH
 from pathlib import Path
 
 # Configuration
+# Environment variables for Docker/Environment awareness
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral-nemo:12b")
+SKIP_OLLAMA_START = os.getenv("SKIP_OLLAMA_START", "false").lower() == "true"
+
 # Path relative to project root
 ROOT_DIR = Path(__file__).parents[2]
 DATA_DIR = ROOT_DIR / "data"
@@ -30,12 +37,12 @@ _llm = None
 
 def check_ollama_health() -> tuple[bool, str]:
     """Check if Ollama is running and responding.
-    
+
     Returns:
         (is_healthy, status_message)
     """
     try:
-        req = urllib.request.Request('http://localhost:11434/api/tags', method='GET')
+        req = urllib.request.Request(f'{OLLAMA_HOST}/api/tags', method='GET')
         with urllib.request.urlopen(req, timeout=2) as response:
             if response.status == 200:
                 return True, "Ollama is running"
@@ -48,7 +55,7 @@ def check_ollama_health() -> tuple[bool, str]:
 
 def start_ollama_service() -> tuple[bool, str]:
     """Check if Ollama is running, and start it if not.
-    
+
     Returns:
         (is_running, status_message)
     """
@@ -56,7 +63,10 @@ def start_ollama_service() -> tuple[bool, str]:
     is_healthy, _ = check_ollama_health()
     if is_healthy:
         return True, "Ollama is already running"
-    
+
+    if SKIP_OLLAMA_START:
+        return False, f"Ollama is not running at {OLLAMA_HOST} and auto-start is disabled."
+
     # Try to start Ollama
     try:
         # Start ollama serve in background (detached process)
@@ -66,16 +76,16 @@ def start_ollama_service() -> tuple[bool, str]:
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
         )
-        
+
         # Wait up to 10 seconds for Ollama to start
         for _ in range(20):
             time.sleep(0.5)
             is_healthy, _ = check_ollama_health()
             if is_healthy:
                 return True, "Ollama started successfully"
-        
+
         return False, "Ollama started but not responding yet (may need more time)"
-    
+
     except FileNotFoundError:
         return False, "Ollama is not installed. Download from https://ollama.ai/download"
     except Exception as e:
@@ -95,14 +105,15 @@ def get_llm():
     global _llm
     if _llm is None:
         _llm = ChatOllama(
-            model="mistral-nemo:12b",
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_HOST,
             temperature=0.5,
             num_ctx=4096,
         )
     return _llm
 
 
-def _extract_json_from_llm_response(content: str, expected_schema: dict = None) -> dict | None:
+def _extract_json_from_llm_response(content: str, expected_schema: dict = None) -> dict | None:  # noqa
     """Robustly extract and validate JSON from LLM response.
 
     Args:
@@ -138,7 +149,7 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
     # Look for { ... } or [ ... ] patterns
     json_obj_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
     matches = re.findall(json_obj_pattern, content)
-    
+
     for match in matches:
         try:
             result = json.loads(match)
@@ -146,7 +157,7 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
                 return _validate_json_schema(result, expected_schema)
         except json.JSONDecodeError:
             continue
-    
+
     # Strategy 3: Try parsing the entire content as JSON
     try:
         result = json.loads(content)
@@ -154,31 +165,31 @@ def _extract_json_from_llm_response(content: str, expected_schema: dict = None) 
             return _validate_json_schema(result, expected_schema)
     except json.JSONDecodeError:
         pass
-    
+
     return None
 
 
-def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:
+def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:  # noqa
     """Validate and coerce JSON data to expected schema.
-    
+
     Args:
         data: Parsed JSON dict
         expected_schema: Dict mapping field names to (type, default_value) tuples
-        
+
     Returns:
         Validated dict with coerced types
     """
     if not expected_schema:
         return data
-    
+
     validated = {}
     for field, (expected_type, default_value) in expected_schema.items():
         value = data.get(field, default_value)
-        
+
         if value is None:
             validated[field] = default_value
             continue
-        
+
         # Type coercion with error handling
         try:
             if expected_type == float:
@@ -197,7 +208,7 @@ def _validate_json_schema(data: dict, expected_schema: dict = None) -> dict:
                 validated[field] = value
         except (ValueError, TypeError):
             validated[field] = default_value
-    
+
     return validated
 
 
@@ -240,7 +251,7 @@ def sync_vectorstore():
         return "No hikes in the database to index."
 
     vectorstore = _open_vectorstore()
-    
+
     # Get existing IDs from Chroma
     try:
         existing = vectorstore.get(include=[])  # fetch ids only
@@ -314,31 +325,31 @@ def _validate_sql_query(sql: str) -> tuple[bool, str]:
     # Remove comments to prevent hidden commands
     sql_no_comments = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
     sql_no_comments = re.sub(r'/\*.*?\*/', '', sql_no_comments, flags=re.DOTALL)
-    
+
     # Check for multiple statements (semicolon-separated)
     if ';' in sql_no_comments.rstrip(';'):
         return False, "Error: multiple statements not allowed"
-    
+
     # Check it starts with SELECT
     if not _ALLOWED_SQL.match(sql_no_comments.strip()):
         return False, "Error: only SELECT queries are permitted"
-    
+
     # Check for dangerous keywords
     sql_upper = sql_no_comments.upper()
     for keyword in _DANGEROUS_SQL_KEYWORDS:
         # Use word boundaries to avoid false positives in column names
         if re.search(rf'\b{keyword}\b', sql_upper):
             return False, f"Error: dangerous keyword '{keyword}' not allowed"
-    
+
     # Ensure only querying the 'hikes' table or using it in joins
     # This prevents querying system tables like sqlite_master
     # Ensure only querying the 'hikes' table (or 'ranking') in any FROM/JOIN clause.
     # This prevents querying system tables like sqlite_master via JOINs or nested queries.
-    table_refs = re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w]*)", sql_no_comments, flags=re.IGNORECASE)
+    table_refs = re.findall(r"\b(?:FROM|JOIN)\s+([a-z_][\w]*)", sql_no_comments, flags=re.IGNORECASE)
     for table in table_refs:
         if table.lower() not in ["hikes", "ranking"]:
             return False, f"Error: access to table '{table}' not allowed"
-    
+
     return True, ""
 
 
@@ -377,7 +388,7 @@ def predict_hike_difficulty(distance: float, elevation_gain: float, notes: str =
     """
     Predict hike difficulty using the LLM and RAG guidelines.
     Falls back to heuristic calculation if LLM is unavailable.
-    
+
     Returns:
         dict with keys: difficulty_score (float), difficulty_level (str), used_ai (bool)
     """
@@ -464,7 +475,7 @@ _SYSTEM_CONTENT = (
     "IMPORTANT: You have tools to access the user's personal hiking history, but you should ONLY use them "
     "when the user's question is specifically about THEIR past hikes or personal data.\n\n"
     "## When to USE tools:\n"
-    "- Questions about specific hikes they've done (\"my hike to Horgen\", \"hikes I did in May\")\n"
+    "- Questions about specific hikes they've done (\"my hike to <area> or <location>\", \"hikes I did in May\")\n"
     "- Statistics about their hiking history (\"how many hikes\", \"total distance\", \"hardest hike\")\n"
     "- Personal notes or experiences (\"which hikes did I mention rain\", \"where did I feel tired\")\n"
     "- Comparisons within their data (\"my longest vs shortest hike\")\n\n"
@@ -475,14 +486,12 @@ _SYSTEM_CONTENT = (
     "- Questions about trails they haven't done yet\n"
     "- General conversation (\"hello\", \"what can you do\", \"tell me about hiking\")\n\n"
     "## Available Tools:\n"
-    "- query_hikes_db: SQL queries for statistics, counts, sums, filtering by date/distance/elevation\n"
-    f"  {_SQL_SCHEMA}\n"
-    "- search_hike_notes: Semantic search over their hike notes and descriptions\n\n"
-    "CRITICAL: When users ask about 'this year', 'this month', 'today', etc., ALWAYS use SQLite date functions like "
-    "date('now') and strftime(). NEVER use a hardcoded year from your training data. "
-    "The schema above shows examples.\n\n"
+    "- query_hikes_db(sql: str): Run a SQL SELECT query for ANY statistics. Use this for counts, sums, averages, or filtering. MUST use correctly formatted SQL.\n"
+    "- search_hike_notes(query: str): Semantic search for 'feelings' or descriptions in notes.\n\n"
+    "CRITICAL: If you need information from the user's hiking history, you MUST call one of the tools above. "
+    "Do not just explain how to do it; actually trigger the tool call.\n\n"
     "Hikes have difficulty_score (1-50) and difficulty_level (Easy, Moderate, Challenging, Hard, Expert).\n"
-    "When you do use tools, provide specific numbers and dates. Otherwise, give friendly, helpful advice directly."
+    "When you use tools, provide specific numbers and dates. If no tools are needed, give friendly advice directly."
 )
 _SYSTEM_PROMPT = SystemMessage(content=_SYSTEM_CONTENT)
 
@@ -495,6 +504,22 @@ def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
 
     for _ in range(10):  # safety cap on iterations
         response = llm_with_tools.invoke(messages)
+
+        # Fallback: If no tool_calls but content looks like a tool call (common with small models)
+        if not response.tool_calls and "query_hikes_db" in response.content:
+            # Try to grab SQL from the response content
+            sql_match = re.search(r"(SELECT\b[^;]+)(?:;|$)", response.content, re.IGNORECASE)
+            if sql_match:
+                sql = sql_match.group(1).strip("`").strip()
+                response.tool_calls = [{"name": "query_hikes_db", "args": {"sql": sql}, "id": "manual_sql"}]
+
+        elif not response.tool_calls and "search_hike_notes" in response.content:
+            # Try to grab query from search_hike_notes("...")
+            search_match = re.search(r"search_hike_notes\(['\"](.+?)['\"]\)", response.content)
+            if search_match:
+                query = search_match.group(1)
+                response.tool_calls = [{"name": "search_hike_notes", "args": {"query": query}, "id": "manual_search"}]
+
         messages.append(response)
 
         if not response.tool_calls:

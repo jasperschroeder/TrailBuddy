@@ -1,0 +1,44 @@
+services:
+  trailbuddy:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral-nemo:12b}
+      - SKIP_OLLAMA_START=true
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    volumes:
+      - ./ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  model-puller:
+    image: ollama/ollama:latest
+    container_name: model-puller
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral-nemo:12b}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo "Pulling model: $OLLAMA_MODEL"
+        ollama pull $OLLAMA_MODEL
+        echo "Successfully pulled $OLLAMA_MODEL"

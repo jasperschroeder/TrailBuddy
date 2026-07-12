@@ -1,0 +1,12 @@
+__pycache__
+.venv
+.env
+data/
+ollama_models/
+.git
+.gitignore
+.vscode
+*.gpx
+*.csv
+*.db
+*.sqlite3

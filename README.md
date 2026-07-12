@@ -28,6 +28,36 @@ TrailBuddy lets you log hikes from GPX and CSV files, visualize routes, track pe
 - Local LLM: Ollama
 - Parsing and analytics: GPX parsing plus Pandas
 
+## Getting Started
+
+### Using Docker (Recommended)
+
+The easiest way to run TrailBuddy is using Docker Compose. This will set up both the application and the Ollama AI service automatically.
+
+1.  **Clone the repository.**
+2.  **Run Docker Compose:**
+    ```bash
+    docker compose up --build
+    ```
+3.  **Access the app:** Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+*Note: On the first run, the `model-puller` service will download the AI model specified in the `.env` file (defaults to `mistral-nemo:12b`, ~7GB). This may take some time depending on your internet connection.*
+
+### Manual Setup
+
+If you prefer to run it locally without Docker:
+
+1.  **Install Ollama:** Download and install from [ollama.ai](https://ollama.ai).
+2.  **Pull the model:** Run `ollama pull mistral-nemo:12b`.
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+4.  **Run the app:**
+    ```bash
+    streamlit run app/main.py
+    ```
+
 ## Quick Start
 
 1. Install dependencies from `requirements.txt`
