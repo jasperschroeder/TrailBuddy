@@ -475,7 +475,7 @@ _SYSTEM_CONTENT = (
     "IMPORTANT: You have tools to access the user's personal hiking history, but you should ONLY use them "
     "when the user's question is specifically about THEIR past hikes or personal data.\n\n"
     "## When to USE tools:\n"
-    "- Questions about specific hikes they've done (\"my hike to Horgen\", \"hikes I did in May\")\n"
+    "- Questions about specific hikes they've done (\"my hike to <area> or <location>\", \"hikes I did in May\")\n"
     "- Statistics about their hiking history (\"how many hikes\", \"total distance\", \"hardest hike\")\n"
     "- Personal notes or experiences (\"which hikes did I mention rain\", \"where did I feel tired\")\n"
     "- Comparisons within their data (\"my longest vs shortest hike\")\n\n"
