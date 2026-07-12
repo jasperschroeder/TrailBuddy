@@ -18,7 +18,7 @@ from pathlib import Path
 
 # Configuration
 # Environment variables for Docker/Environment awareness
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral-nemo:12b")
 SKIP_OLLAMA_START = os.getenv("SKIP_OLLAMA_START", "false").lower() == "true"
 
