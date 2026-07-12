@@ -508,10 +508,10 @@ def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
         # Fallback: If no tool_calls but content looks like a tool call (common with small models)
         if not response.tool_calls and "query_hikes_db" in response.content:
             # Try to grab SQL from the response content
-            sql_match = re.search(r"SELECT.*?;?", response.content, re.IGNORECASE | re.DOTALL)
-            if sql_match:
-                sql = sql_match.group(0).strip("`").strip()
-                response.tool_calls = [{"name": "query_hikes_db", "args": {"sql": sql}, "id": "manual_sql"}]
+sql_match = re.search(r"(SELECT\b[\s\S]+?)(?:;|$)", response.content, re.IGNORECASE)
+if sql_match:
+    sql = sql_match.group(1).strip("`").strip()
+    response.tool_calls = [{"name": "query_hikes_db", "args": {"sql": sql}, "id": "manual_sql"}]
         
         elif not response.tool_calls and "search_hike_notes" in response.content:
             # Try to grab query from search_hike_notes("...")
