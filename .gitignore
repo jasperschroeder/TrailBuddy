@@ -14,6 +14,12 @@ venv/
 .venv/
 __pycache__/
 
+# Evaluation artifacts: personal Q/A pairs, data-derived fixtures, and generated results.
+evals/private/
+evals/results/
+evals/fixtures/.snapshots/
+*.eval_report.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

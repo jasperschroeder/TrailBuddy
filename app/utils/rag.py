@@ -486,7 +486,8 @@ _SYSTEM_CONTENT = (
     "- Questions about trails they haven't done yet\n"
     "- General conversation (\"hello\", \"what can you do\", \"tell me about hiking\")\n\n"
     "## Available Tools:\n"
-    "- query_hikes_db(sql: str): Run a SQL SELECT query for ANY statistics. Use this for counts, sums, averages, or filtering. MUST use correctly formatted SQL.\n"
+    "- query_hikes_db(sql: str): Run a SQL SELECT query for ANY statistics. "
+    "Use this for counts, sums, averages, or filtering. MUST use correctly formatted SQL.\n"
     "- search_hike_notes(query: str): Semantic search for 'feelings' or descriptions in notes.\n\n"
     "CRITICAL: If you need information from the user's hiking history, you MUST call one of the tools above. "
     "Do not just explain how to do it; actually trigger the tool call.\n\n"
@@ -496,30 +497,69 @@ _SYSTEM_CONTENT = (
 _SYSTEM_PROMPT = SystemMessage(content=_SYSTEM_CONTENT)
 
 
-def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
-    """Run the hybrid tool-calling + RAG agent and return (answer, sources)."""
+def _maybe_extract_fallback_tool_calls(response) -> None:
+    """Patch response.tool_calls when the model emits tool-like text instead of native calls."""
+    if response.tool_calls:
+        return
+
+    if "query_hikes_db" in response.content:
+        sql_match = re.search(r"(SELECT\b[^;]+)(?:;|$)", response.content, re.IGNORECASE)
+        if sql_match:
+            sql = sql_match.group(1).strip("`").strip()
+            response.tool_calls = [{"name": "query_hikes_db", "args": {"sql": sql}, "id": "manual_sql"}]
+
+    elif "search_hike_notes" in response.content:
+        search_match = re.search(r"search_hike_notes\(['\"](.+?)['\"]\)", response.content)
+        if search_match:
+            query = search_match.group(1)
+            response.tool_calls = [
+                {"name": "search_hike_notes", "args": {"query": query}, "id": "manual_search"}
+            ]
+
+
+def _build_trace(tc: dict, result: object, trace_format: str) -> dict | str:
+    """Build a markdown or structured trace for a single tool call."""
+    args_obj = tc.get("args", {})
+    if not isinstance(args_obj, dict):
+        args_obj = {"value": args_obj}
+
+    if trace_format == "structured":
+        return {
+            "tool_name": tc["name"],
+            "tool_call_id": tc.get("id", "n/a"),
+            "args": args_obj,
+            "raw_result": str(result),
+        }
+
+    args_json = json.dumps(args_obj, ensure_ascii=True, indent=2)
+    return (
+        f"Tool: {tc['name']}\n"
+        f"Call ID: {tc.get('id', 'n/a')}\n"
+        f"Args:\n```json\n{args_json}\n```"
+    )
+
+
+def ask_trailbuddy(question: str, trace_format: str = "markdown") -> tuple[str, list]:
+    """Run the hybrid tool-calling + RAG agent and return (answer, sources).
+
+    Args:
+        question: The user's question.
+        trace_format: "markdown" returns human-readable traces for the UI;
+                      "structured" returns dicts with tool_name/args/raw_result for evals.
+
+    Returns:
+        Tuple of (answer_text, list_of_traces).
+    """
+    if trace_format not in {"markdown", "structured"}:
+        raise ValueError("trace_format must be 'markdown' or 'structured'")
+
     messages = [_SYSTEM_PROMPT, HumanMessage(content=question)]
-    sources: list[str] = []
+    sources: list = []
     llm_with_tools = get_llm_with_tools()
 
     for _ in range(10):  # safety cap on iterations
         response = llm_with_tools.invoke(messages)
-
-        # Fallback: If no tool_calls but content looks like a tool call (common with small models)
-        if not response.tool_calls and "query_hikes_db" in response.content:
-            # Try to grab SQL from the response content
-            sql_match = re.search(r"(SELECT\b[^;]+)(?:;|$)", response.content, re.IGNORECASE)
-            if sql_match:
-                sql = sql_match.group(1).strip("`").strip()
-                response.tool_calls = [{"name": "query_hikes_db", "args": {"sql": sql}, "id": "manual_sql"}]
-
-        elif not response.tool_calls and "search_hike_notes" in response.content:
-            # Try to grab query from search_hike_notes("...")
-            search_match = re.search(r"search_hike_notes\(['\"](.+?)['\"]\)", response.content)
-            if search_match:
-                query = search_match.group(1)
-                response.tool_calls = [{"name": "search_hike_notes", "args": {"query": query}, "id": "manual_search"}]
-
+        _maybe_extract_fallback_tool_calls(response)
         messages.append(response)
 
         if not response.tool_calls:
@@ -534,16 +574,6 @@ def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
             else:
                 messages.append(ToolMessage(content=str(result)))
 
-            # Record a deterministic execution trace for the UI.
-            args_obj = tc.get("args", {})
-            if not isinstance(args_obj, dict):
-                args_obj = {"value": args_obj}
-            args_json = json.dumps(args_obj, ensure_ascii=True, indent=2)
-            trace = (
-                f"Tool: {tc['name']}\n"
-                f"Call ID: {tc.get('id', 'n/a')}\n"
-                f"Args:\n```json\n{args_json}\n```"
-            )
-            sources.append(trace)
+            sources.append(_build_trace(tc, result, trace_format))
 
     return response.content, sources
