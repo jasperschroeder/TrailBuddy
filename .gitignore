@@ -13,6 +13,7 @@ ollama_models/
 venv/
 .venv/
 __pycache__/
+playground/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
