@@ -3,11 +3,13 @@ and the main ask_trailbuddy() conversation loop."""
 from datetime import datetime, timezone
 import json
 import re
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from llm.client import get_llm
 from llm.tools import TOOLS, TOOL_MAP
+from services.chat_logger import log_chat_interaction
 
 
 def get_llm_with_tools():
@@ -192,30 +194,122 @@ def _execute_tool_calls(response, messages: list, sources: list[str]) -> None:
         sources.append(trace)
 
 
+def _extract_token_usage(response) -> tuple[int, int]:
+    """Extract input/output token counts from a LangChain message response.
+
+    ChatOllama may expose token counts in ``usage_metadata`` or in
+    ``response_metadata`` (``prompt_eval_count`` / ``eval_count``). Fall back
+    to zeros when neither source is available.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if isinstance(usage, dict):
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        if input_tokens is not None and output_tokens is not None:
+            return int(input_tokens), int(output_tokens)
+
+    metadata = getattr(response, "response_metadata", {}) or {}
+    input_tokens = metadata.get("prompt_eval_count")
+    output_tokens = metadata.get("eval_count")
+    if input_tokens is not None and output_tokens is not None:
+        return int(input_tokens), int(output_tokens)
+
+    return 0, 0
+
+
+def _process_agent_iteration(
+    response,
+    messages: list,
+    sources: list[str],
+    used_tools: bool,
+    grounding_retries: int,
+    tool_names: list[str],
+) -> tuple[bool, int, bool]:
+    """Handle one LLM response: execute tools or validate grounding.
+
+    Returns a tuple of (should_continue, grounding_retries_remaining,
+    used_tools_after_this_iteration).
+    """
+    if response.tool_calls:
+        for tc in response.tool_calls:
+            name = tc.get("name")
+            if name and name not in tool_names:
+                tool_names.append(name)
+        _execute_tool_calls(response, messages, sources)
+        return True, grounding_retries, True
+
+    is_grounded = _is_answer_grounded(
+        response.content, _collect_tool_output_text(messages)
+    )
+    if used_tools and not is_grounded:
+        if grounding_retries > 0:
+            grounding_retries -= 1
+            messages.append(HumanMessage(content=_GROUNDING_REMINDER))
+            return True, grounding_retries, used_tools
+        response.content = _UNGROUNDED_FALLBACK_MESSAGE
+    return False, grounding_retries, used_tools
+
+
+def _log_chat_interaction_safe(
+    *,
+    question: str,
+    input_tokens: int,
+    output_tokens: int,
+    tools_called: bool,
+    tool_names: list[str],
+    latency_ms: int,
+) -> None:
+    """Persist chat metrics; failures are swallowed so chat never breaks."""
+    try:
+        log_chat_interaction(
+            question=question,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            tools_called=tools_called,
+            tool_names=tool_names,
+            latency_ms=latency_ms,
+            model=get_llm().model,
+        )
+    except Exception:
+        # Logging is best-effort; never let telemetry issues break the UI.
+        pass
+
+
 def ask_trailbuddy(question: str) -> tuple[str, list[str]]:
     """Run the hybrid tool-calling + RAG agent and return (answer, sources)."""
+    start_time = time.perf_counter()
     messages = [_build_system_prompt(), HumanMessage(content=question)]
     sources: list[str] = []
     llm_with_tools = get_llm_with_tools()
     used_tools = False
     grounding_retries = 2
+    total_input_tokens = 0
+    total_output_tokens = 0
+    tool_names: list[str] = []
 
     for _ in range(10):  # safety cap on iterations
         response = llm_with_tools.invoke(messages)
         _recover_missed_tool_call(response)
         messages.append(response)
 
-        if not response.tool_calls:
-            is_grounded = _is_answer_grounded(response.content, _collect_tool_output_text(messages))
-            if used_tools and not is_grounded:
-                if grounding_retries > 0:
-                    grounding_retries -= 1
-                    messages.append(HumanMessage(content=_GROUNDING_REMINDER))
-                    continue
-                response.content = _UNGROUNDED_FALLBACK_MESSAGE
+        input_tokens, output_tokens = _extract_token_usage(response)
+        total_input_tokens += input_tokens
+        total_output_tokens += output_tokens
+
+        should_continue, grounding_retries, used_tools = _process_agent_iteration(
+            response, messages, sources, used_tools, grounding_retries, tool_names
+        )
+        if not should_continue:
             break
 
-        used_tools = True
-        _execute_tool_calls(response, messages, sources)
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    _log_chat_interaction_safe(
+        question=question,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+        tools_called=used_tools,
+        tool_names=tool_names,
+        latency_ms=latency_ms,
+    )
 
     return response.content, sources

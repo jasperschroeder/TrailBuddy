@@ -14,6 +14,7 @@ HIKES_DIR = DATA_DIR / "hikes"
 HIKES_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "trailbuddy.db"
+CHAT_LOG_PATH = DATA_DIR / "chat_logs.jsonl"
 
 CHROMA_PATH = DATA_DIR / "chroma_db"
 CHROMA_COLLECTION = "trailbuddy_hikes"
